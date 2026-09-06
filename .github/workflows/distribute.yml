@@ -92,7 +92,10 @@ jobs:
             "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
             >> "$RUNNER_TEMP/release-notes.txt"
       - name: Install Firebase CLI
-        run: npm install --global firebase-tools@15.29.0
+        env:
+          # renovate: datasource=npm depName=firebase-tools
+          FIREBASE_CLI_VERSION: '15.29.0'
+        run: npm install --global "firebase-tools@$FIREBASE_CLI_VERSION"
       - name: Skip obsolete distributions
         id: current
         env:
