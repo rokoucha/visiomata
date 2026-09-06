@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: Create Firebase configuration for build checks
+        # Fork PRs can build without access to the real Firebase project or secrets.
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = {
+              "project_info": {"project_number": "1234567890", "project_id": "visiomata-ci"},
+              "client": [{
+                  "client_info": {
+                      "mobilesdk_app_id": "1:1234567890:android:0000000000000000000000",
+                      "android_client_info": {"package_name": "net.rokoucha.visiomata"},
+                  },
+                  "api_key": [{"current_key": "AIzaSyCIPlaceholderNotARealFirebaseAPIKey"}],
+              }],
+              "configuration_version": "1",
+          }
+          Path("app/google-services.json").write_text(json.dumps(config))
+          PY
+      - name: Check and build debug APK
+        run: >-
+          ./gradlew --no-configuration-cache --max-workers=2
+          spotlessCheck testDebugUnitTest lintDebug
+          detektDebug detektDebugUnitTest detektDebugAndroidTest
+          :app:assembleDebug

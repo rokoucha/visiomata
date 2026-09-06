@@ -1,0 +1,12 @@
+[package]
+name = "visiomata-mpeg2toh264"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+mpeg2toh264 = { path = "../generated/mpeg2toh264" }

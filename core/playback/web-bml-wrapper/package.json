@@ -1,0 +1,15 @@
+{
+  "name": "visiomata-web-bml-wrapper",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit && esbuild src/android-entry.ts --bundle --minify --legal-comments=external --outfile=../src/main/assets/web-bml/play_local.js"
+  },
+  "dependencies": {
+    "web-bml": "https://github.com/otya128/web-bml/archive/3c075c9d4c71142b5ba7bf0f71aeb4dfed775f11.tar.gz"
+  },
+  "devDependencies": {
+    "@types/css": "0.0.38",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

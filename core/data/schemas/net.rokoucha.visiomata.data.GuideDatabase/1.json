@@ -1,0 +1,256 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "907128010383ae20870ec64ce57c731e",
+    "entities": [
+      {
+        "tableName": "services",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`cacheId` TEXT NOT NULL, `source` TEXT NOT NULL, `id` INTEGER NOT NULL, `networkId` INTEGER NOT NULL, `transportStreamId` INTEGER, `serviceId` INTEGER NOT NULL, `name` TEXT NOT NULL, `channelType` TEXT NOT NULL, `channel` TEXT NOT NULL, `remoteControlKeyId` INTEGER, `logoId` INTEGER, PRIMARY KEY(`cacheId`))",
+        "fields": [
+          {
+            "fieldPath": "cacheId",
+            "columnName": "cacheId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "networkId",
+            "columnName": "networkId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transportStreamId",
+            "columnName": "transportStreamId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "serviceId",
+            "columnName": "serviceId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "channelType",
+            "columnName": "channelType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "channel",
+            "columnName": "channel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "remoteControlKeyId",
+            "columnName": "remoteControlKeyId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "logoId",
+            "columnName": "logoId",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "cacheId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_services_source_id",
+            "unique": false,
+            "columnNames": [
+              "source",
+              "id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_services_source_id` ON `${TABLE_NAME}` (`source`, `id`)"
+          },
+          {
+            "name": "index_services_source_channelType_networkId_serviceId",
+            "unique": false,
+            "columnNames": [
+              "source",
+              "channelType",
+              "networkId",
+              "serviceId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_services_source_channelType_networkId_serviceId` ON `${TABLE_NAME}` (`source`, `channelType`, `networkId`, `serviceId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "programs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`cacheId` TEXT NOT NULL, `source` TEXT NOT NULL, `id` INTEGER NOT NULL, `eventId` INTEGER NOT NULL, `networkId` INTEGER NOT NULL, `transportStreamId` INTEGER, `serviceId` INTEGER NOT NULL, `title` TEXT, `description` TEXT, `startAt` INTEGER NOT NULL, `duration` INTEGER NOT NULL, `genreLevel1` INTEGER, `genreLevel2` INTEGER, `extendedJson` TEXT, `relatedItemsJson` TEXT, `audiosJson` TEXT, PRIMARY KEY(`cacheId`))",
+        "fields": [
+          {
+            "fieldPath": "cacheId",
+            "columnName": "cacheId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "networkId",
+            "columnName": "networkId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transportStreamId",
+            "columnName": "transportStreamId",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "serviceId",
+            "columnName": "serviceId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "startAt",
+            "columnName": "startAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "duration",
+            "columnName": "duration",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "genreLevel1",
+            "columnName": "genreLevel1",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "genreLevel2",
+            "columnName": "genreLevel2",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "extendedJson",
+            "columnName": "extendedJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "relatedItemsJson",
+            "columnName": "relatedItemsJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "audiosJson",
+            "columnName": "audiosJson",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "cacheId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_programs_source_networkId_serviceId_startAt_id",
+            "unique": false,
+            "columnNames": [
+              "source",
+              "networkId",
+              "serviceId",
+              "startAt",
+              "id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_programs_source_networkId_serviceId_startAt_id` ON `${TABLE_NAME}` (`source`, `networkId`, `serviceId`, `startAt`, `id`)"
+          }
+        ]
+      },
+      {
+        "tableName": "guide_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`source` TEXT NOT NULL, `refreshedAt` INTEGER NOT NULL, `lastEventAt` INTEGER, PRIMARY KEY(`source`))",
+        "fields": [
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "refreshedAt",
+            "columnName": "refreshedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastEventAt",
+            "columnName": "lastEventAt",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "source"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '907128010383ae20870ec64ce57c731e')"
+    ]
+  }
+}

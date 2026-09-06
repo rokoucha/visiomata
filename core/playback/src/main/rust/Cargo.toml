@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["visiomata-mpeg2toh264", "generated/mpeg2toh264"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+license = "MIT"
+repository = "https://github.com/rokoucha/visiomata"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

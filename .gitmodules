@@ -1,0 +1,9 @@
+[submodule "core/playback/src/main/cpp/freetype"]
+	path = core/playback/src/main/cpp/freetype
+	url = https://github.com/freetype/freetype.git
+[submodule "core/playback/src/main/cpp/libaribcaption"]
+	path = core/playback/src/main/cpp/libaribcaption
+	url = https://github.com/xqq/libaribcaption.git
+[submodule "core/playback/src/main/rust/vendor/mpeg2toh264"]
+	path = core/playback/src/main/rust/vendor/mpeg2toh264
+	url = https://github.com/otya128/mpeg2toh264.git

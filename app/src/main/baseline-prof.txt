@@ -1,0 +1,7 @@
+# TV cold start and initial home composition. Dependency profiles cover Compose itself.
+HSPLnet/rokoucha/visiomata/MainActivity;->**(**)**
+HSPLnet/rokoucha/visiomata/VisiomataAppKt;->**(**)**
+HSPLnet/rokoucha/visiomata/AppThemeKt;->**(**)**
+HSPLnet/rokoucha/visiomata/home/**->**(**)**
+HSPLnet/rokoucha/visiomata/model/ProgramGuide;->**(**)**
+HSPLnet/rokoucha/visiomata/model/ProgramGuideKt;->**(**)**

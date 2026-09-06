@@ -1,0 +1,61 @@
+config:
+  validation: true
+  warningsAsErrors: false
+  checkExhaustiveness: false
+
+complexity:
+  LongMethod:
+    active: true
+    allowedLines: 60
+    ignoreAnnotated:
+      - Composable
+  LongParameterList:
+    active: true
+    allowedFunctionParameters: 8
+    allowedConstructorParameters: 8
+    ignoreDefaultParameters: true
+    ignoreAnnotated:
+      - Composable
+  TooManyFunctions:
+    active: false
+
+coroutines:
+  CoroutineLaunchedInTestWithoutRunTest:
+    active: true
+  GlobalCoroutineUsage:
+    active: true
+  InjectDispatcher:
+    active: false
+  SleepInsteadOfDelay:
+    active: true
+  SuspendFunInFinallySection:
+    active: true
+  SuspendFunSwallowedCancellation:
+    active: true
+
+naming:
+  FunctionNaming:
+    active: true
+    ignoreAnnotated:
+      - Composable
+      - Test
+
+style:
+  MagicNumber:
+    active: false
+  UnusedPrivateFunction:
+    active: true
+    ignoreAnnotated:
+      - Preview
+
+Compose:
+  ComposableNaming:
+    active: true
+  ComposableParamOrder:
+    active: true
+  LambdaParameterInRestartableEffect:
+    active: true
+  ModifierMissing:
+    active: true
+  MutableStateParam:
+    active: true

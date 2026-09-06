@@ -1,0 +1,125 @@
+name: Firebase App Distribution
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize distributions; do not interrupt an upload already in progress.
+concurrency:
+  group: firebase-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  distribute:
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: firebase-distribution
+      url: https://console.firebase.google.com/project/${{ vars.FIREBASE_PROJECT_ID }}/appdistribution
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      FIREBASE_APP_ID: ${{ vars.FIREBASE_APP_ID }}
+      FIREBASE_TESTER_GROUPS: ${{ vars.FIREBASE_TESTER_GROUPS }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Validate environment configuration
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          for name in FIREBASE_PROJECT_ID FIREBASE_APP_ID FIREBASE_TESTER_GROUPS \
+            GOOGLE_SERVICES_JSON RELEASE_KEYSTORE_BASE64 RELEASE_STORE_PASSWORD \
+            RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing firebase-distribution environment setting: $name"
+              exit 1
+            fi
+          done
+      - uses: ./.github/actions/setup-build
+        with:
+          cache-disabled: 'true'
+      - name: Build signed release APK
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_FILE: ${{ runner.temp }}/release.jks
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          umask 077
+          trap 'rm -f "$RELEASE_STORE_FILE" app/google-services.json' EXIT
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RELEASE_STORE_FILE"
+          printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          config = json.loads(Path("app/google-services.json").read_text())
+          assert config["project_info"]["project_id"] == os.environ["FIREBASE_PROJECT_ID"], "Firebase project mismatch"
+          assert any(
+              client["client_info"]["mobilesdk_app_id"] == os.environ["FIREBASE_APP_ID"]
+              and client["client_info"]["android_client_info"]["package_name"] == "net.rokoucha.visiomata"
+              for client in config["client"]
+          ), "Firebase app mismatch"
+          PY
+          ./gradlew --no-configuration-cache --max-workers=2 :app:assembleRelease -PversionCode="$GITHUB_RUN_NUMBER"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
+          git log -1 --format='%h %s' > "$RUNNER_TEMP/release-notes.txt"
+          printf '\nBuild: %s\nCommit: %s\nCI: %s/%s/actions/runs/%s\n' \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" \
+            >> "$RUNNER_TEMP/release-notes.txt"
+      - name: Install Firebase CLI
+        run: npm install --global firebase-tools@15.29.0
+      - name: Skip obsolete distributions
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          latest_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/distribute.yml/runs?branch=main&per_page=1" --jq '.workflow_runs[0].run_number')
+          if [[ "$latest_sha" != "$GITHUB_SHA" ]] || (( latest_run > GITHUB_RUN_NUMBER )); then
+            echo 'upload=false' >> "$GITHUB_OUTPUT"
+            echo 'Skipped distribution: a newer commit or workflow run exists.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'upload=true' >> "$GITHUB_OUTPUT"
+          fi
+      # Authenticate immediately before upload so short-lived credentials stay fresh.
+      - name: Authenticate to Google Cloud
+        if: steps.current.outputs.upload == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.FIREBASE_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - name: Distribute APK
+        if: steps.current.outputs.upload == 'true'
+        run: |
+          firebase appdistribution:distribute app/build/outputs/apk/release/app-release.apk \
+            --app "$FIREBASE_APP_ID" --project "$FIREBASE_PROJECT_ID" \
+            --groups "$FIREBASE_TESTER_GROUPS" \
+            --release-notes-file "$RUNNER_TEMP/release-notes.txt" --non-interactive
+          printf 'Distributed versionCode **%s** (`%s`) to Firebase App Distribution.\n' \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
