@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Renovate branch automerge depends on push checks surviving concurrent PR checks.
+# Cancelling reusable checks on main would interrupt the distribution that depends on them.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/renovate/') }}
+
 jobs:
   check:
     runs-on: ubuntu-24.04
@@ -40,7 +46,7 @@ jobs:
           PY
       - name: Check and build debug APK
         run: >-
-          ./gradlew --no-configuration-cache --max-workers=2
+          ./gradlew --no-configuration-cache --parallel --max-workers=2
           spotlessCheck testDebugUnitTest lintDebug
           detektDebug detektDebugUnitTest detektDebugAndroidTest
           :app:assembleDebug

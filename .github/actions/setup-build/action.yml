@@ -2,7 +2,7 @@ name: Set up Android build
 description: Install the Java, Android, Rust, and Node.js toolchains used by Visiomata
 inputs:
   cache-disabled:
-    description: Disable Gradle caching for jobs that handle signing credentials
+    description: Disable build and dependency caching for jobs that handle signing credentials
     default: 'false'
 runs:
   using: composite
@@ -18,9 +18,14 @@ runs:
     - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       with:
         cache-disabled: ${{ inputs.cache-disabled }}
+        # Repeated PR and Renovate checks need their own cache to reuse branch-specific build results.
+        cache-read-only: 'false'
     - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: '24'
+        cache: ${{ inputs.cache-disabled != 'true' && 'npm' || '' }}
+        cache-dependency-path: core/playback/web-bml-wrapper/package-lock.json
+        package-manager-cache: false
     - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
     - name: Install Android SDK packages
       shell: bash
