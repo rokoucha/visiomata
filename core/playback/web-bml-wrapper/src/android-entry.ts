@@ -159,6 +159,9 @@ function notifyVideoRectAfterLayout(): void {
 
 browser.addEventListener("invisible", (event) => {
   const invisible = event.detail;
+  // Native video is behind the WebView, so moving the logical video element
+  // cannot cover the BML graphics as it does in web-bml's HTML video player.
+  content.toggleAttribute("data-invisible", invisible);
   window.AndroidBml?.onInvisibleChanged(invisible);
   if (invisible) {
     invisibleVideoContainer.appendChild(videoContainer);

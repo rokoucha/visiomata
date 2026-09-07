@@ -17,6 +17,13 @@
       inset: 0;
       contain: layout paint;
     }
+    /* ARIB STD-B24 Vol. 2, 5.3.20.4: invisible suppresses the entire document,
+       regardless of descendant styles, while scripts and events keep running.
+       Preserve layout so video rectangles remain measurable before redisplay. */
+    .data-broadcasting-browser-content[data-invisible] {
+      opacity: 0;
+      pointer-events: none;
+    }
     .arib-video-invisible-container, .arib-video-container, #arib-video {
       width: 100%; height: 100%; background: transparent !important;
     }
@@ -56,7 +63,7 @@
 <body>
   <input type="file" id="ts"><input id="url"><button id="url-submit"></button><pre id="url-err"></pre>
   <div id="data-broadcasting-browser">
-    <div class="data-broadcasting-browser-content"></div>
+    <div class="data-broadcasting-browser-content" data-invisible></div>
     <div class="arib-video-invisible-container"><div class="arib-video-container"><video id="arib-video" muted autoplay style="display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important"></video></div></div>
     <div class="arib-video-cc-container"></div>
     <div class="overlay-input-container">
