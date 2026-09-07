@@ -84,6 +84,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -195,6 +196,7 @@ fun PlayerScreen(
             onRemoteKey = sendRemoteKey,
             onBack = onBack,
             onReload = reloadPlayer,
+            errorMessage = errorMessage,
             player = {
                 // A live broadcast cannot be resumed meaningfully from an old buffered position. Remove
                 // the player from composition while the activity is stopped so codecs, stream buffers,
@@ -247,15 +249,6 @@ fun PlayerScreen(
                 }
             },
         )
-
-        errorMessage?.let { message ->
-            Text(
-                text = "再生エラー\n$message",
-                color = Color.White,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.align(Alignment.Center).background(Color.Black.copy(alpha = 0.82f)).padding(24.dp),
-            )
-        }
     }
 }
 
@@ -274,6 +267,27 @@ private fun LandscapeSystemBarsEffect(enabled: Boolean) {
         onDispose {
             controller.systemBarsBehavior = previousBehavior
             controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+}
+
+@Composable
+private fun PlayerErrorOverlay(
+    message: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier.padding(horizontal = 16.dp, vertical = 64.dp), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier
+                .widthIn(max = 640.dp)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.82f))
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("再生エラー", color = Color.White, style = MaterialTheme.typography.titleSmall)
+            Text(message, color = Color.White, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -305,6 +319,7 @@ private fun PlayerLayout(
     modifier: Modifier = Modifier,
     tvInputMode: TvInputMode = TvInputMode.Player,
     onTvInputModeChanged: (TvInputMode) -> Unit = {},
+    errorMessage: String? = null,
     onReload: () -> Unit,
 ) {
     val currentOnTvInputModeChanged by rememberUpdatedState(onTvInputModeChanged)
@@ -331,6 +346,9 @@ private fun PlayerLayout(
                         indication = null,
                     ) { toggleOverlay() },
                 )
+                errorMessage?.let { message ->
+                    PlayerErrorOverlay(message, Modifier.matchParentSize().zIndex(1f))
+                }
                 androidx.compose.animation.AnimatedVisibility(
                     visible = overlayVisible,
                     enter = fadeIn(),
@@ -706,6 +724,9 @@ private fun PlayerLayout(
                     .focusRequester(playerFocusRequester)
                     .focusable(),
             )
+            errorMessage?.let { message ->
+                PlayerErrorOverlay(message, Modifier.matchParentSize().zIndex(1f))
+            }
             AnimatedVisibility(
                 visible = overlayVisible,
                 enter = fadeIn(),
@@ -1578,6 +1599,36 @@ private fun PortraitPlayerPreview() {
             onRemoteKey = {},
             onBack = {},
             onReload = {},
+        )
+    }
+}
+
+@Preview(name = "Portrait playback error", device = Devices.PHONE, showBackground = true)
+@Preview(name = "Landscape playback error", widthDp = 640, heightDp = 360, showBackground = true)
+@Preview(name = "Large text playback error", device = Devices.PHONE, fontScale = 2f, showBackground = true)
+@Composable
+private fun PlayerErrorPreview() {
+    MaterialTheme {
+        PlayerLayout(
+            portrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT,
+            isTv = false,
+            dataBroadcastingEnabled = true,
+            bmlActive = false,
+            bmlContentVisible = false,
+            bmlUsedKeyGroups = emptySet(),
+            audioTracks = emptyList(),
+            selectedAudioTrackId = null,
+            onAudioTrackSelected = {},
+            programInfo = previewInfo,
+            overlayTimeout = 5.seconds,
+            player = { Box(Modifier.fillMaxSize().background(Color.Black)) },
+            controls = {},
+            onRemoteKey = {},
+            onBack = {},
+            onReload = {},
+            errorMessage =
+                "MediaCodecVideoRenderer error, index=0, format=Format(1024/256, null, " +
+                    "video/mp2t, video/avc, null, [1440, 1080]), format_supported=YES\n再接続します…",
         )
     }
 }

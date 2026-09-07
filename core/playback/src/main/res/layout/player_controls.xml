@@ -8,4 +8,4 @@
     android:focusable="true"
     android:focusableInTouchMode="true"
     app:surface_type="none"
-    app:use_controller="true" />
+    app:use_controller="false" />

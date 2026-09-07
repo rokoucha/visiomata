@@ -663,7 +663,7 @@ fun VisiomataPlayer(
                             ) as PlayerView
                         ).apply {
                             this.player = player
-                            controllerAutoShow = true
+                            useController = false
                             keepScreenOn = player.isPlaying
                             val subtitleViewportListener =
                                 object : Player.Listener {
@@ -753,7 +753,6 @@ fun VisiomataPlayer(
                     val playerView = videoHost.getChildAt(videoHost.childCount - 1) as PlayerView
                     val videoRect = bmlVideoRect
                     playerView.player = player
-                    playerView.useController = bmlInvisible
                     val desiredLayoutParams =
                         if (!bmlInvisible && videoRect != null && videoRect.width > 0f && videoRect.height > 0f) {
                             FrameLayout
