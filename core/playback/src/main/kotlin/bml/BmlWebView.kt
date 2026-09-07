@@ -72,6 +72,9 @@ internal class BmlWebView(
         isFocusableInTouchMode = acceptsKeyFocus
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
+        // BML positions text in fixed pixel boxes. System font scaling enlarges only the text
+        // and clips it; the graphics plane is already scaled as a whole to fit the player.
+        settings.textZoom = 100
         if (lowMemoryMode) settings.cacheMode = WebSettings.LOAD_NO_CACHE
         settings.mediaPlaybackRequiresUserGesture = false
         settings.allowFileAccess = false
