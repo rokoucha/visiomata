@@ -59,7 +59,8 @@ jobs:
           done
       - uses: ./.github/actions/setup-build
         with:
-          cache-disabled: 'true'
+          # Signing credentials and Firebase build outputs must not enter shared caches.
+          cache-read-only: 'true'
       - name: Build signed release APK
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
@@ -85,7 +86,7 @@ jobs:
               for client in config["client"]
           ), "Firebase app mismatch"
           PY
-          ./gradlew --no-configuration-cache --max-workers=2 :app:assembleRelease -PversionCode="$GITHUB_RUN_NUMBER"
+          ./gradlew --no-configuration-cache --parallel --max-workers=2 :app:assembleRelease -PversionCode="$GITHUB_RUN_NUMBER"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
           git log -1 --format='%h %s' > "$RUNNER_TEMP/release-notes.txt"
           printf '\nBuild: %s\nCommit: %s\nCI: %s/%s/actions/runs/%s\n' \
