@@ -151,9 +151,20 @@ internal class BmlTsDemuxer(
     private var queuedPcrRead = 0
     private var queuedPcrSize = 0
     private val drainScheduled = AtomicBoolean()
+    private val active = AtomicBoolean(false)
     private val generation = AtomicInteger()
     private val completedModules = ConcurrentHashMap.newKeySet<CompletedModuleKey>()
     private var workerGeneration = 0
+
+    override fun start() {
+        if (active.compareAndSet(false, true) && consumer != null) {
+            worker.execute(::flushMessagesSafely)
+        }
+    }
+
+    override fun stop() {
+        if (active.compareAndSet(true, false)) reset()
+    }
 
     fun pushSection(
         pid: Int,
@@ -161,7 +172,7 @@ internal class BmlTsDemuxer(
         offset: Int,
         length: Int,
     ) {
-        if (length <= 0) return
+        if (length <= 0 || !active.get()) return
         Trace.beginSection("BML enqueue section")
         try {
             val copy = acquireInputBuffer(length)
@@ -188,6 +199,7 @@ internal class BmlTsDemuxer(
         offset: Int,
         length: Int,
     ): Boolean {
+        if (!active.get()) return false
         if (length < 26 || (source[offset].toInt() and 0xff) != 0x3c) return true
         val messageStart = offset + 8
         if (messageStart + 12 > offset + length || u16(source, messageStart + 2) != 0x1003) return true
@@ -209,6 +221,7 @@ internal class BmlTsDemuxer(
         pcrBase: Long,
         pcrExtension: Int,
     ) {
+        if (!active.get()) return
         synchronized(inputLock) {
             if (queuedPcrSize == maxQueuedPcr) {
                 queuedPcrRead = (queuedPcrRead + 1) % maxQueuedPcr
@@ -230,6 +243,7 @@ internal class BmlTsDemuxer(
         additionalInfo: ByteArray?,
         serviceId: Int?,
     ) {
+        if (!active.get()) return
         if ((additionalInfo?.firstOrNull()?.toInt()?.and(0x20) ?: 0) != 0) entryPointPids.add(pid)
         synchronized(inputLock) {
             queuedComponents.addLast(
@@ -249,7 +263,7 @@ internal class BmlTsDemuxer(
 
     override fun setConsumer(consumer: ((String) -> Unit)?) {
         this.consumer = consumer
-        if (consumer != null) worker.execute(::flushMessagesSafely)
+        if (consumer != null && active.get()) worker.execute(::flushMessagesSafely)
     }
 
     fun updateProgramIds(
@@ -257,7 +271,7 @@ internal class BmlTsDemuxer(
         transportStreamId: Int?,
         networkId: Int?,
     ) {
-        if (worker.isShutdown) return
+        if (worker.isShutdown || !active.get()) return
         worker.execute {
             var changed = false
             if (originalNetworkId != null && originalNetworkId != this.originalNetworkId) {
@@ -310,6 +324,7 @@ internal class BmlTsDemuxer(
     }
 
     override fun release() {
+        active.set(false)
         consumer = null
         worker.shutdownNow()
         moduleWorks.forEach { it.inflater?.end() }
@@ -362,7 +377,7 @@ internal class BmlTsDemuxer(
     }
 
     private fun scheduleDrain(delayMillis: Long = batchIntervalMillis) {
-        if (worker.isShutdown || !drainScheduled.compareAndSet(false, true)) return
+        if (!active.get() || worker.isShutdown || !drainScheduled.compareAndSet(false, true)) return
         try {
             worker.schedule(::runScheduledDrain, delayMillis, TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
@@ -372,7 +387,7 @@ internal class BmlTsDemuxer(
 
     private fun runScheduledDrain() {
         try {
-            drainAndFlushSafely()
+            if (active.get()) drainAndFlushSafely()
         } finally {
             drainScheduled.set(false)
             if (hasQueuedInput()) scheduleDrain(if (hasBoundedWork()) moduleContinuationMillis else batchIntervalMillis)
@@ -1170,6 +1185,7 @@ internal class BmlTsDemuxer(
     }
 
     private fun emit(message: JSONObject) {
+        if (!active.get()) return
         enqueueMessage(PendingMessage(message.toString()))
     }
 
@@ -1189,6 +1205,7 @@ internal class BmlTsDemuxer(
     }
 
     private fun flushMessages() {
+        if (!active.get()) return
         val target = consumer ?: return
         if (waitingMessages.isEmpty()) return
         batchBuilder.setLength(0)

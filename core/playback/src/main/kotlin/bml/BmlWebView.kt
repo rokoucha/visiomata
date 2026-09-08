@@ -23,7 +23,9 @@ import java.net.URL
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -47,6 +49,11 @@ internal class BmlWebView(
     private val onBmlVideoRectChanged: (left: Float, top: Float, width: Float, height: Float) -> Unit,
 ) : WebView(context) {
     private val released = AtomicBoolean(false)
+
+    @Volatile private var active = false
+    private var pageLoaded = false
+
+    @Volatile private var generation = 0
     private val networkBridge =
         BmlNetworkBridge(context, internetAccessEnabled) { requestId, response ->
             post {
@@ -93,8 +100,9 @@ internal class BmlWebView(
                     if (lastInvisible == invisible) return
                     lastInvisible = invisible
                     Log.d("BmlBridge", "invisible=$invisible")
+                    val expectedGeneration = generation
                     post {
-                        if (released.get()) return@post
+                        if (released.get() || !active || generation != expectedGeneration) return@post
                         // The embedded page is transparent and web-bml already moves its logical video
                         // plane in response to this event. Do not mutate WebView alpha/visibility here:
                         // that would invalidate the entire hardware layer.
@@ -110,8 +118,11 @@ internal class BmlWebView(
                             .filter(String::isNotBlank)
                             .toSet()
                     Log.d("BmlBridge", "usedKeyList=$usedKeyList groups=$groups")
+                    val expectedGeneration = generation
                     post {
-                        if (!released.get()) onBmlUsedKeyGroupsChanged(groups)
+                        if (!released.get() && active && generation == expectedGeneration) {
+                            onBmlUsedKeyGroupsChanged(groups)
+                        }
                     }
                 }
 
@@ -136,8 +147,9 @@ internal class BmlWebView(
                     lastVideoWidth = width
                     lastVideoHeight = height
                     Log.d("BmlBridge", "videoRect=$left,$top ${width}x$height")
+                    val expectedGeneration = generation
                     post {
-                        if (released.get()) return@post
+                        if (released.get() || !active || generation != expectedGeneration) return@post
                         Trace.beginSection("BML video rect callback")
                         try {
                             onBmlVideoRectChanged(
@@ -193,6 +205,7 @@ internal class BmlWebView(
                     url: String,
                 ) {
                     if (released.get()) return
+                    pageLoaded = true
                     if (postalCode.length == 7 && postalCode.all(Char::isDigit)) {
                         view.evaluateJavascript(
                             "localStorage.setItem('nvram_prefix=receiverinfo%2Fzipcode', btoa('$postalCode'))",
@@ -223,29 +236,55 @@ internal class BmlWebView(
                         """.trimIndent(),
                         null,
                     )
-                    messageSource.setConsumer { messages ->
-                        if (released.get()) return@setConsumer
-                        view.post {
-                            if (released.get()) return@post
-                            Trace.beginSection("BML dispatch JS")
-                            try {
-                                view.evaluateJavascript(
-                                    "window.AndroidBmlMessages?.($messages)",
-                                    null,
-                                )
-                            } finally {
-                                Trace.endSection()
-                            }
-                        }
-                    }
-                    if (acceptsKeyFocus) view.requestFocus()
+                    if (active) attachConsumer()
+                    if (active && acceptsKeyFocus) view.requestFocus()
                 }
             }
         loadUrl(startUrl)
     }
 
+    fun setActive(active: Boolean) {
+        if (released.get() || this.active == active) return
+        this.active = active
+        generation++
+        if (active) {
+            networkBridge.start()
+            if (pageLoaded) attachConsumer()
+        } else {
+            messageSource.setConsumer(null)
+            networkBridge.stop()
+        }
+    }
+
+    fun reloadForNewStream() {
+        if (released.get()) return
+        messageSource.setConsumer(null)
+        pageLoaded = false
+        generation++
+        networkBridge.stop()
+        if (active) networkBridge.start()
+        reload()
+    }
+
+    private fun attachConsumer() {
+        val expectedGeneration = generation
+        messageSource.setConsumer { messages ->
+            if (released.get() || !active || generation != expectedGeneration) return@setConsumer
+            post {
+                if (released.get() || !active || generation != expectedGeneration) return@post
+                Trace.beginSection("BML dispatch JS")
+                try {
+                    evaluateJavascript("window.AndroidBmlMessages?.($messages)", null)
+                } finally {
+                    Trace.endSection()
+                }
+            }
+        }
+    }
+
     fun release() {
         if (!released.compareAndSet(false, true)) return
+        active = false
         messageSource.setConsumer(null)
         networkBridge.release()
         stopLoading()
@@ -261,7 +300,7 @@ internal class BmlWebView(
         key: String,
         isDown: Boolean,
     ) {
-        if (released.get()) return
+        if (released.get() || !active) return
         val eventType = if (isDown) "keydown" else "keyup"
         val safeKey = key.replace("\\", "\\\\").replace("'", "\\'")
         evaluateJavascript(
@@ -309,11 +348,27 @@ private class BmlNetworkBridge(
     private val connectivityManager =
         context.applicationContext.getSystemService(ConnectivityManager::class.java)
     private val released = AtomicBoolean(false)
+    private val active = AtomicBoolean(false)
+    private val generation = AtomicInteger()
     private val executor = Executors.newFixedThreadPool(4)
+    private val connections = mutableSetOf<HttpURLConnection>()
+
+    fun start() {
+        if (enabled && !released.get()) active.set(true)
+    }
+
+    fun stop() {
+        active.set(false)
+        generation.incrementAndGet()
+        synchronized(connections) {
+            connections.forEach(HttpURLConnection::disconnect)
+            connections.clear()
+        }
+    }
 
     @JavascriptInterface
     fun isConnected(): Boolean {
-        if (!enabled) return false
+        if (!enabled || !active.get()) return false
         val network = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -326,25 +381,44 @@ private class BmlNetworkBridge(
         uri: String,
         bodyBase64: String?,
     ) {
-        if (released.get()) return
-        executor.execute {
-            val response = performRequest(method, uri, bodyBase64)
-            if (!released.get()) deliverResponse(requestId, response)
+        if (released.get() || !active.get()) return
+        val expectedGeneration = generation.get()
+        try {
+            executor.execute {
+                val response = performRequest(method, uri, bodyBase64, expectedGeneration)
+                if (isCurrent(expectedGeneration)) deliverResponse(requestId, response)
+            }
+        } catch (_: RejectedExecutionException) {
+            // release() won the race with a JavaScript request.
         }
     }
 
     fun release() {
-        if (released.compareAndSet(false, true)) executor.shutdownNow()
+        if (released.compareAndSet(false, true)) {
+            stop()
+            executor.shutdownNow()
+        }
     }
 
     private fun performRequest(
         method: String,
         uri: String,
         bodyBase64: String?,
+        expectedGeneration: Int,
     ): String {
-        if (!enabled || method !in setOf("GET", "POST")) return errorResponse()
+        if (!enabled || !isCurrent(expectedGeneration) || method !in setOf("GET", "POST")) {
+            return errorResponse()
+        }
         val url = runCatching { URL(uri) }.getOrNull() ?: return errorResponse()
         if (url.protocol != "http" && url.protocol != "https") return errorResponse()
+        val requestBody =
+            if (method == "POST") {
+                Base64.decode(bodyBase64.orEmpty(), Base64.DEFAULT).also { body ->
+                    if (body.size > MAX_POST_BYTES) return errorResponse()
+                }
+            } else {
+                null
+            }
 
         return runCatching {
             val connection =
@@ -365,13 +439,16 @@ private class BmlNetworkBridge(
                     if (method == "POST") {
                         doOutput = true
                         setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-                        val body = Base64.decode(bodyBase64.orEmpty(), Base64.DEFAULT)
-                        if (body.size > MAX_POST_BYTES) return errorResponse()
-                        setFixedLengthStreamingMode(body.size)
-                        outputStream.use { it.write(body) }
+                        setFixedLengthStreamingMode(checkNotNull(requestBody).size)
                     }
                 }
+            synchronized(connections) { connections.add(connection) }
             try {
+                if (!isCurrent(expectedGeneration)) return errorResponse()
+                requestBody?.let { body ->
+                    connection.outputStream.use { it.write(body) }
+                    if (!isCurrent(expectedGeneration)) return errorResponse()
+                }
                 val statusCode = connection.responseCode
                 val stream = if (statusCode >= 400) connection.errorStream else connection.inputStream
                 val response = stream?.use { it.readNBytes(MAX_RESPONSE_BYTES + 1) } ?: byteArrayOf()
@@ -386,12 +463,16 @@ private class BmlNetworkBridge(
                     .put("response", Base64.encodeToString(response, Base64.NO_WRAP))
                     .toString()
             } finally {
+                synchronized(connections) { connections.remove(connection) }
                 connection.disconnect()
             }
         }.getOrElse { errorResponse() }
     }
 
     private fun errorResponse(): String = JSONObject().put("error", true).toString()
+
+    private fun isCurrent(expectedGeneration: Int): Boolean =
+        active.get() && !released.get() && generation.get() == expectedGeneration
 
     private companion object {
         const val MAX_POST_BYTES = 4 * 1024 + "Denbun=".length

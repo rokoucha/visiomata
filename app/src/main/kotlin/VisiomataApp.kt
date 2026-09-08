@@ -1056,38 +1056,41 @@ private fun ConfiguredPlayerScreen(
     playbackSessionUseCase: PlaybackSessionUseCase,
     onBack: () -> Unit,
 ) {
-    val programInfo by produceState<PlayerProgramInfo?>(null, guideUseCases, settings, serviceId) {
+    val programInfoState by produceState<LoadedPlayerProgramInfo?>(null, guideUseCases, settings, serviceId) {
         guideUseCases.observePlayback(settings, serviceId).collectLatest { data ->
-            if (data == null) return@collectLatest
             value =
-                PlayerProgramInfo(
-                    serviceName = data.service.name,
-                    channelLabel = data.service.channelIdentityLabel,
-                    channelType = data.service.channelType.value,
-                    logicalChannelNumber = data.service.logicalChannelNumber,
-                    title = data.program.title,
-                    timeRange = data.program.playerTimeRange(),
-                    description = data.program.description,
-                    progress = data.program.progressAt(data.observedAt),
-                    details = data.program.playerDetails(data.extended),
-                    nextProgram =
-                        data.nextProgram?.let { next ->
-                            PlayerUpcomingProgram(
-                                title = next.title,
-                                timeRange = next.playerTimeRange(),
-                                description = next.description,
-                            )
-                        },
-                    serviceLogo = data.serviceLogo,
-                    audioComponents =
-                        data.program.audios.map { audio ->
-                            PlayerAudioComponent(
-                                componentTag = audio.componentTag,
-                                isMain = audio.isMain,
-                                isDualMono = audio.isDualMono,
-                                languages = audio.languages,
-                            )
-                        },
+                LoadedPlayerProgramInfo(
+                    data?.let {
+                        PlayerProgramInfo(
+                            serviceName = it.service.name,
+                            channelLabel = it.service.channelIdentityLabel,
+                            channelType = it.service.channelType.value,
+                            logicalChannelNumber = it.service.logicalChannelNumber,
+                            title = it.program.title,
+                            timeRange = it.program.playerTimeRange(),
+                            description = it.program.description,
+                            progress = it.program.progressAt(it.observedAt),
+                            details = it.program.playerDetails(it.extended),
+                            nextProgram =
+                                it.nextProgram?.let { next ->
+                                    PlayerUpcomingProgram(
+                                        title = next.title,
+                                        timeRange = next.playerTimeRange(),
+                                        description = next.description,
+                                    )
+                                },
+                            serviceLogo = it.serviceLogo,
+                            audioComponents =
+                                it.program.audios.map { audio ->
+                                    PlayerAudioComponent(
+                                        componentTag = audio.componentTag,
+                                        isMain = audio.isMain,
+                                        isDualMono = audio.isDualMono,
+                                        languages = audio.languages,
+                                    )
+                                },
+                        )
+                    },
                 )
         }
     }
@@ -1100,7 +1103,8 @@ private fun ConfiguredPlayerScreen(
         value = playbackSessionUseCase(settings, serviceId)
     }
     val session = playbackSession
-    if (session == null) {
+    val loadedProgramInfo = programInfoState
+    if (session == null || loadedProgramInfo == null) {
         HomeLoadingIndicator()
         return
     }
@@ -1117,10 +1121,14 @@ private fun ConfiguredPlayerScreen(
         mahironApiRoot = session.mahironApiRoot,
         serviceId = session.serviceId,
         postalCode = session.postalCode,
-        programInfo = programInfo,
+        programInfo = loadedProgramInfo.value,
         onBack = onBack,
     )
 }
+
+private data class LoadedPlayerProgramInfo(
+    val value: PlayerProgramInfo?,
+)
 
 private val playerTimeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
 

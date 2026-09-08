@@ -93,6 +93,7 @@ internal class MahironBmlMessageSource(
             ).apply { isDaemon = true }
         }
     private val released = AtomicBoolean(false)
+    private val active = AtomicBoolean(false)
     private val generation = AtomicInteger()
     private val taskSequence = AtomicLong()
     private val requestedModules = mutableSetOf<ModuleKey>()
@@ -103,9 +104,23 @@ internal class MahironBmlMessageSource(
 
     @Volatile private var started = false
 
+    override fun start() {
+        if (released.get() || !active.compareAndSet(false, true)) return
+        if (consumer != null) {
+            started = true
+            start(generation.get())
+        }
+    }
+
+    override fun stop() {
+        if (!active.compareAndSet(true, false)) return
+        cancelPendingWork()
+        started = false
+    }
+
     override fun setConsumer(consumer: ((String) -> Unit)?) {
         this.consumer = consumer
-        if (consumer != null && !started && !released.get()) {
+        if (consumer != null && active.get() && !started && !released.get()) {
             started = true
             start(generation.get())
         }
@@ -113,26 +128,16 @@ internal class MahironBmlMessageSource(
 
     override fun reset() {
         if (released.get()) return
-        generation.incrementAndGet()
-        synchronized(calls) {
-            calls.forEach(Call::cancel)
-            calls.clear()
-        }
-        synchronized(requestedModules) { requestedModules.clear() }
-        synchronized(entryPointComponents) { entryPointComponents.clear() }
-        moduleExecutor.queue.clear()
-        started = consumer != null
+        cancelPendingWork()
+        started = active.get() && consumer != null
         if (started) start(generation.get())
     }
 
     override fun release() {
         if (!released.compareAndSet(false, true)) return
+        active.set(false)
         consumer = null
-        generation.incrementAndGet()
-        synchronized(calls) {
-            calls.forEach(Call::cancel)
-            calls.clear()
-        }
+        cancelPendingWork()
         moduleExecutor.shutdownNow()
         reconnectExecutor.shutdownNow()
         client.dispatcher.cancelAll()
@@ -503,7 +508,19 @@ internal class MahironBmlMessageSource(
 
     private fun removeCall(call: Call) = synchronized(calls) { calls.remove(call) }
 
-    private fun isCurrent(expectedGeneration: Int) = !released.get() && generation.get() == expectedGeneration
+    private fun cancelPendingWork() {
+        generation.incrementAndGet()
+        synchronized(calls) {
+            calls.forEach(Call::cancel)
+            calls.clear()
+        }
+        synchronized(requestedModules) { requestedModules.clear() }
+        synchronized(entryPointComponents) { entryPointComponents.clear() }
+        moduleExecutor.queue.clear()
+    }
+
+    private fun isCurrent(expectedGeneration: Int) =
+        active.get() && !released.get() && generation.get() == expectedGeneration
 
     private fun emit(message: JSONObject) = consumer?.invoke("[$message]")
 

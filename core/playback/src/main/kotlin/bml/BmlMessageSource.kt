@@ -7,6 +7,10 @@ package net.rokoucha.visiomata.playback.bml
  * Keeping the browser on this boundary prevents the acquisition strategy from leaking into the UI.
  */
 internal interface BmlMessageSource {
+    fun start()
+
+    fun stop()
+
     fun setConsumer(consumer: ((String) -> Unit)?)
 
     fun reset()

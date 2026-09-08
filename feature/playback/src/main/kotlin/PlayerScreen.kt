@@ -48,9 +48,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -88,8 +87,6 @@ import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -159,8 +156,6 @@ fun PlayerScreen(
     var errorMessage by remember(url) { mutableStateOf<String?>(null) }
     var reloadGeneration by remember(url) { mutableIntStateOf(0) }
     val portrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT && !isTv
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsState()
     LandscapeSystemBarsEffect(enabled = !portrait)
     var bmlActive by remember(url) { mutableStateOf(false) }
     var bmlContentVisible by remember(url) { mutableStateOf(false) }
@@ -198,55 +193,49 @@ fun PlayerScreen(
             onReload = reloadPlayer,
             errorMessage = errorMessage,
             player = {
-                // A live broadcast cannot be resumed meaningfully from an old buffered position. Remove
-                // the player from composition while the activity is stopped so codecs, stream buffers,
-                // and the BML WebView are released. Returning to the app creates a fresh live connection.
-                if (lifecycleState.isAtLeast(Lifecycle.State.STARTED)) {
-                    key(reloadGeneration) {
-                        VisiomataPlayer(
-                            url = url,
-                            basicAuthUsername = basicAuthUsername,
-                            basicAuthPassword = basicAuthPassword,
-                            bearerToken = bearerToken,
-                            forceMpeg2Transcoding = forceMpeg2Transcoding,
-                            forceHardwareMpeg2Decoder = forceHardwareMpeg2Decoder,
-                            deinterlaceEnabled = deinterlaceEnabled,
-                            dataBroadcastingEnabled = dataBroadcastingEnabled,
-                            dataBroadcastingInternetEnabled = dataBroadcastingInternetEnabled,
-                            mahironApiRoot = mahironApiRoot,
-                            serviceId = serviceId,
-                            postalCode = postalCode,
-                            mediaTitle = programInfo?.title,
-                            mediaSubtitle = programInfo?.serviceName,
-                            mediaArtworkData = programInfo?.serviceLogo,
-                            audioComponents =
-                                programInfo?.audioComponents.orEmpty().map { audio ->
-                                    BroadcastAudioComponent(
-                                        componentTag = audio.componentTag,
-                                        isMain = audio.isMain,
-                                        isDualMono = audio.isDualMono,
-                                        languages = audio.languages,
-                                    )
-                                },
-                            preferComposeKeyInput = isTv,
-                            remoteKeyEvents = remoteKeyEvents,
-                            selectedAudioTrackId = selectedAudioTrackId,
-                            onBmlInputStateChanged = { available, contentVisible, groups ->
-                                bmlActive = available
-                                bmlContentVisible = contentVisible
-                                bmlUsedKeyGroups = groups
-                            },
-                            onPlaybackErrorChanged = { errorMessage = it },
-                            onAudioTracksChanged = { tracks ->
-                                audioTracks = tracks
-                                tracks.firstOrNull(AudioTrackOption::selected)?.let {
-                                    selectedAudioTrackId = it.id
-                                }
-                            },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    }
-                }
+                VisiomataPlayer(
+                    url = url,
+                    basicAuthUsername = basicAuthUsername,
+                    basicAuthPassword = basicAuthPassword,
+                    bearerToken = bearerToken,
+                    forceMpeg2Transcoding = forceMpeg2Transcoding,
+                    forceHardwareMpeg2Decoder = forceHardwareMpeg2Decoder,
+                    deinterlaceEnabled = deinterlaceEnabled,
+                    dataBroadcastingEnabled = dataBroadcastingEnabled,
+                    dataBroadcastingInternetEnabled = dataBroadcastingInternetEnabled,
+                    mahironApiRoot = mahironApiRoot,
+                    serviceId = serviceId,
+                    postalCode = postalCode,
+                    mediaTitle = programInfo?.title,
+                    mediaSubtitle = programInfo?.serviceName,
+                    mediaArtworkData = programInfo?.serviceLogo,
+                    audioComponents =
+                        programInfo?.audioComponents.orEmpty().map { audio ->
+                            BroadcastAudioComponent(
+                                componentTag = audio.componentTag,
+                                isMain = audio.isMain,
+                                isDualMono = audio.isDualMono,
+                                languages = audio.languages,
+                            )
+                        },
+                    preferComposeKeyInput = isTv,
+                    remoteKeyEvents = remoteKeyEvents,
+                    reloadRequest = reloadGeneration,
+                    selectedAudioTrackId = selectedAudioTrackId,
+                    onBmlInputStateChanged = { available, contentVisible, groups ->
+                        bmlActive = available
+                        bmlContentVisible = contentVisible
+                        bmlUsedKeyGroups = groups
+                    },
+                    onPlaybackErrorChanged = { errorMessage = it },
+                    onAudioTracksChanged = { tracks ->
+                        audioTracks = tracks
+                        tracks.firstOrNull(AudioTrackOption::selected)?.let {
+                            selectedAudioTrackId = it.id
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
             },
         )
     }
@@ -323,6 +312,8 @@ private fun PlayerLayout(
     onReload: () -> Unit,
 ) {
     val currentOnTvInputModeChanged by rememberUpdatedState(onTvInputModeChanged)
+    val currentPlayer by rememberUpdatedState(player)
+    val movablePlayer = remember { movableContentOf { currentPlayer() } }
     if (portrait) {
         var selectedTab by rememberSaveable { mutableIntStateOf(0) }
         var overlayVisible by remember { mutableStateOf(true) }
@@ -339,7 +330,7 @@ private fun PlayerLayout(
             modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding(),
         ) {
             Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)) {
-                player()
+                movablePlayer()
                 Box(
                     Modifier.matchParentSize().clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -703,7 +694,7 @@ private fun PlayerLayout(
                     }
                 },
         ) {
-            player()
+            movablePlayer()
             if (isTv && tvInputMode == TvInputMode.DataBroadcast) {
                 DataBroadcastInputHint(
                     interactionGeneration = dataBroadcastHintGeneration,

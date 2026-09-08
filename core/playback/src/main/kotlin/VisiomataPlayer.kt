@@ -7,7 +7,6 @@ import android.graphics.fonts.SystemFonts
 import android.os.Handler
 import android.os.Looper
 import android.os.Trace
-import android.util.Base64
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.ViewGroup
@@ -33,7 +32,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingSimpleBasePlayer
 import androidx.media3.common.MediaItem
@@ -44,37 +42,15 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
-import androidx.media3.common.util.TimestampAdjuster
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DataSource
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.analytics.AnalyticsListener
-import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.extractor.Extractor
-import androidx.media3.extractor.ExtractorsFactory
-import androidx.media3.extractor.ts.TsExtractor
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.flow.Flow
 import net.rokoucha.visiomata.playback.R
-import net.rokoucha.visiomata.playback.bml.BmlResourceLimits
-import net.rokoucha.visiomata.playback.bml.BmlTsDemuxer
 import net.rokoucha.visiomata.playback.bml.BmlWebView
-import net.rokoucha.visiomata.playback.bml.MahironBmlMessageSource
 import net.rokoucha.visiomata.playback.bml.createBmlWebView
-import net.rokoucha.visiomata.playback.media3.AribTsPayloadReaderFactory
-import net.rokoucha.visiomata.playback.media3.RelayingDataSourceFactory
-import net.rokoucha.visiomata.playback.media3.TsStreamRelay
-import net.rokoucha.visiomata.playback.media3.VisiomataSubtitleParserFactory
-import net.rokoucha.visiomata.playback.mpeg2toh264.DeinterlaceMetadataQueue
-import net.rokoucha.visiomata.playback.mpeg2toh264.LinearDeinterlaceEffect
 import net.rokoucha.visiomata.playback.mpeg2toh264.Mpeg2DecoderCapabilities
 import java.io.File
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 data class BmlRemoteKeyEvent(
@@ -190,6 +166,7 @@ fun VisiomataPlayer(
     audioComponents: List<BroadcastAudioComponent> = emptyList(),
     preferComposeKeyInput: Boolean = false,
     remoteKeyEvents: Flow<BmlRemoteKeyEvent>? = null,
+    reloadRequest: Int = 0,
     selectedAudioTrackId: String? = null,
     onBmlInputStateChanged: (
         available: Boolean,
@@ -211,52 +188,53 @@ fun VisiomataPlayer(
             aribFontAssetPaths.map { prepareAribCaptionFont(context, it).absolutePath } +
                 systemSymbolFontPaths()
         }
-    val bmlMessageSource =
+    val transcodeMpeg2Video = forceMpeg2Transcoding ?: !Mpeg2DecoderCapabilities.hasHardwareDecoder
+    val engine =
         remember(
             url,
-            dataBroadcastingEnabled,
-            mahironApiRoot,
-            serviceId,
             basicAuthUsername,
             basicAuthPassword,
             bearerToken,
+            forceMpeg2Transcoding,
+            forceHardwareMpeg2Decoder,
+            deinterlaceEnabled,
+            dataBroadcastingEnabled,
+            mahironApiRoot,
+            serviceId,
             memoryPolicy,
+            audioComponents,
+            transcodeMpeg2Video,
         ) {
-            when {
-                !dataBroadcastingEnabled -> {
-                    null
-                }
-
-                mahironApiRoot != null && serviceId != null -> {
-                    MahironBmlMessageSource(
-                        apiRoot = mahironApiRoot,
-                        serviceId = serviceId,
-                        basicAuthUsername = basicAuthUsername,
-                        basicAuthPassword = basicAuthPassword,
-                        bearerToken = bearerToken,
-                        maxModuleBytes = memoryPolicy.bmlMaxModuleBytes,
-                    )
-                }
-
-                else -> {
-                    BmlTsDemuxer(
-                        BmlResourceLimits(
-                            maxModuleBytes = memoryPolicy.bmlMaxModuleBytes,
-                            maxCarouselBytes = memoryPolicy.bmlMaxCarouselBytes,
-                            queueCapacity = memoryPolicy.bmlQueueCapacity,
-                        ),
-                    )
-                }
-            }
+            VisiomataPlaybackEngine(
+                context.applicationContext,
+                VisiomataPlaybackEngineConfig(
+                    url = url,
+                    basicAuthUsername = basicAuthUsername,
+                    basicAuthPassword = basicAuthPassword,
+                    bearerToken = bearerToken,
+                    forceMpeg2Transcoding = forceMpeg2Transcoding,
+                    forceHardwareMpeg2Decoder = forceHardwareMpeg2Decoder,
+                    transcodeMpeg2Video = transcodeMpeg2Video,
+                    deinterlaceEnabled = deinterlaceEnabled,
+                    dataBroadcastingEnabled = dataBroadcastingEnabled,
+                    mahironApiRoot = mahironApiRoot,
+                    serviceId = serviceId,
+                    audioComponents = audioComponents,
+                    mediaTitle = mediaTitle,
+                    mediaSubtitle = mediaSubtitle,
+                    mediaArtworkData = mediaArtworkData,
+                    aribFontFiles = aribFontFiles,
+                    memoryPolicy = memoryPolicy,
+                ),
+            )
         }
-    val bmlTsDemuxer = bmlMessageSource as? BmlTsDemuxer
-    val tsStreamRelay = remember(bmlTsDemuxer) { bmlTsDemuxer?.let(::TsStreamRelay) }
+    val bmlMessageSource = engine.bmlMessageSource
+    val player = engine.player
     var bmlInvisible by remember(bmlMessageSource) { mutableStateOf(true) }
     var bmlDocumentLoaded by remember(bmlMessageSource) { mutableStateOf(false) }
     var bmlUsedKeyGroups by remember(bmlMessageSource) { mutableStateOf(emptySet<String>()) }
     var bmlVideoRect by remember(bmlMessageSource) { mutableStateOf<VideoRectPx?>(null) }
     var bmlWebView by remember(bmlMessageSource) { mutableStateOf<BmlWebView?>(null) }
-    val transcodeMpeg2Video = forceMpeg2Transcoding ?: !Mpeg2DecoderCapabilities.hasHardwareDecoder
     val videoPath =
         when {
             transcodeMpeg2Video -> "mpeg2-to-h264"
@@ -284,202 +262,6 @@ fun VisiomataPlayer(
             webView.dispatchRemoteKey(event.key, event.isDown)
         }
     }
-    val deinterlaceMetadata =
-        remember(transcodeMpeg2Video) {
-            if (transcodeMpeg2Video) DeinterlaceMetadataQueue() else null
-        }
-    val deinterlaceEffect =
-        remember(deinterlaceMetadata, deinterlaceEnabled) {
-            deinterlaceMetadata
-                ?.takeIf { deinterlaceEnabled }
-                ?.let(::LinearDeinterlaceEffect)
-        }
-
-    val player =
-        remember(
-            url,
-            basicAuthUsername,
-            basicAuthPassword,
-            bearerToken,
-            transcodeMpeg2Video,
-            forceHardwareMpeg2Decoder,
-            deinterlaceEnabled,
-            memoryPolicy,
-            audioComponents,
-            tsStreamRelay,
-        ) {
-            val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            val authorizationHeader =
-                if (bearerToken.isNotEmpty()) {
-                    "Bearer $bearerToken"
-                } else if (basicAuthUsername.isNotEmpty()) {
-                    val credentials =
-                        Base64.encodeToString(
-                            "$basicAuthUsername:$basicAuthPassword".toByteArray(Charsets.UTF_8),
-                            Base64.NO_WRAP,
-                        )
-                    "Basic $credentials"
-                } else {
-                    null
-                }
-            if (authorizationHeader != null) {
-                httpDataSourceFactory.setDefaultRequestProperties(
-                    mapOf("Authorization" to authorizationHeader),
-                )
-            }
-
-            val subtitleParserFactory =
-                VisiomataSubtitleParserFactory(aribFontFiles)
-            Log.i(
-                "VisiomataPlayer",
-                when {
-                    forceMpeg2Transcoding == true -> {
-                        "Video path: forced MPEG-2 to H.264 transcode"
-                    }
-
-                    forceMpeg2Transcoding == false && forceHardwareMpeg2Decoder == true -> {
-                        "Video path: forced hardware MPEG-2 decoder"
-                    }
-
-                    forceMpeg2Transcoding == false && forceHardwareMpeg2Decoder == false -> {
-                        "Video path: forced software MPEG-2 decoder"
-                    }
-
-                    forceMpeg2Transcoding == false -> {
-                        "Video path: forced direct MPEG-2 playback"
-                    }
-
-                    transcodeMpeg2Video -> {
-                        "Video path: MPEG-2 to H.264 fallback"
-                    }
-
-                    else -> {
-                        "Video path: hardware MPEG-2 decoder"
-                    }
-                },
-            )
-            Log.i(
-                "VisiomataPlayer",
-                "Memory policy: lowRam=${memoryPolicy.isLowRamDevice}, " +
-                    "buffer=${memoryPolicy.minBufferMs}..${memoryPolicy.maxBufferMs}ms, " +
-                    "bmlCarousel=${memoryPolicy.bmlMaxCarouselBytes / (1024 * 1024)}MiB",
-            )
-            val extractorsFactory =
-                ExtractorsFactory {
-                    arrayOf<Extractor>(
-                        TsExtractor(
-                            TsExtractor.MODE_SINGLE_PMT,
-                            0,
-                            subtitleParserFactory,
-                            TimestampAdjuster(0),
-                            AribTsPayloadReaderFactory(
-                                transcodeMpeg2Video = transcodeMpeg2Video,
-                                deinterlaceMetadata = deinterlaceMetadata,
-                                bmlDemuxer = bmlTsDemuxer,
-                                audioComponents = audioComponents,
-                            ),
-                            TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES,
-                        ),
-                    )
-                }
-
-            val dataSourceFactory: DataSource.Factory =
-                tsStreamRelay?.let {
-                    RelayingDataSourceFactory(httpDataSourceFactory, it)
-                } ?: httpDataSourceFactory
-            val renderersFactory =
-                DefaultRenderersFactory(context).apply {
-                    if (!transcodeMpeg2Video && forceHardwareMpeg2Decoder != null) {
-                        setMediaCodecSelector(
-                            MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
-                                val decoderInfos =
-                                    MediaCodecSelector.DEFAULT.getDecoderInfos(
-                                        mimeType,
-                                        requiresSecureDecoder,
-                                        requiresTunnelingDecoder,
-                                    )
-                                if (mimeType == MimeTypes.VIDEO_MPEG2) {
-                                    decoderInfos.filter { codec ->
-                                        if (forceHardwareMpeg2Decoder) codec.hardwareAccelerated else codec.softwareOnly
-                                    }
-                                } else {
-                                    decoderInfos
-                                }
-                            },
-                        )
-                    }
-                }
-
-            val playerBuilder =
-                ExoPlayer
-                    .Builder(context, renderersFactory)
-                    .setMediaSourceFactory(
-                        DefaultMediaSourceFactory(
-                            dataSourceFactory,
-                            extractorsFactory,
-                            subtitleParserFactory,
-                        ),
-                    )
-            if (memoryPolicy.isLowRamDevice) {
-                playerBuilder.setLoadControl(
-                    DefaultLoadControl
-                        .Builder()
-                        .setBufferDurationsMs(
-                            memoryPolicy.minBufferMs,
-                            memoryPolicy.maxBufferMs,
-                            1_000,
-                            2_000,
-                        ).setTargetBufferBytes(memoryPolicy.targetBufferBytes)
-                        .setPrioritizeTimeOverSizeThresholds(false)
-                        .build(),
-                )
-            }
-            playerBuilder
-                .build()
-                .apply {
-                    addAnalyticsListener(
-                        object : AnalyticsListener {
-                            override fun onDroppedVideoFrames(
-                                eventTime: AnalyticsListener.EventTime,
-                                droppedFrames: Int,
-                                elapsedMs: Long,
-                            ) {
-                                Log.w(
-                                    "VisiomataPlayer",
-                                    "Dropped $droppedFrames video frames in ${elapsedMs}ms",
-                                )
-                            }
-                        },
-                    )
-                    setAudioAttributes(AudioAttributes.DEFAULT, true)
-                    setHandleAudioBecomingNoisy(true)
-                    if (deinterlaceEffect != null) setVideoEffects(listOf(deinterlaceEffect))
-                    // A Mirakurun channel stream can contain both the full-seg MPEG-2 video and
-                    // the one-seg H.264 video. Prefer full-seg on TVs with an MPEG-2 decoder,
-                    // while still allowing ExoPlayer to fall back on devices without one.
-                    trackSelectionParameters =
-                        trackSelectionParameters
-                            .buildUpon()
-                            .setPreferredVideoMimeTypes(MimeTypes.VIDEO_MPEG2)
-                            .setPreferredTextLanguage("jpn")
-                            .setSelectUndeterminedTextLanguage(true)
-                            .build()
-                    setMediaItem(liveMediaItem(url, mediaTitle, mediaSubtitle, mediaArtworkData))
-                    prepare()
-                    playWhenReady = true
-                }
-        }
-
-    val sessionPlayer = remember(player) { LiveBroadcastPlayer(player) }
-    DisposableEffect(bmlMessageSource) {
-        onDispose {
-            bmlMessageSource?.setConsumer(null)
-            bmlMessageSource?.release()
-            bmlWebView?.release()
-            bmlWebView = null
-            currentOnBmlInputStateChanged(false, false, emptySet())
-        }
-    }
     LaunchedEffect(player, selectedAudioTrackId) {
         val trackId = selectedAudioTrackId ?: return@LaunchedEffect
         player.currentTracks.groups.forEachIndexed { groupIndex, group ->
@@ -498,82 +280,33 @@ fun VisiomataPlayer(
         }
     }
     LaunchedEffect(player, url, mediaTitle, mediaSubtitle, mediaArtworkData) {
-        if (player.mediaItemCount == 0) return@LaunchedEffect
-        player.replaceMediaItem(
-            player.currentMediaItemIndex,
-            liveMediaItem(url, mediaTitle, mediaSubtitle, mediaArtworkData),
-        )
+        val mediaItem = liveMediaItem(url, mediaTitle, mediaSubtitle, mediaArtworkData)
+        if (player.mediaItemCount == 0) {
+            player.setMediaItem(mediaItem)
+        } else {
+            player.replaceMediaItem(player.currentMediaItemIndex, mediaItem)
+        }
     }
 
-    DisposableEffect(player, lifecycleOwner) {
-        val retryHandler = Handler(Looper.getMainLooper())
-        var mediaSession: MediaSession? = null
-        var retryAttempt = 0
-        var retryScheduled = false
+    fun resetBmlViewForNewStream() {
+        bmlInvisible = true
+        bmlDocumentLoaded = false
+        bmlUsedKeyGroups = emptySet()
+        bmlVideoRect = null
+        bmlWebView?.reloadForNewStream()
+    }
+    LaunchedEffect(engine, reloadRequest) {
+        if (reloadRequest > 0) engine.reconnect(::resetBmlViewForNewStream)
+    }
+
+    DisposableEffect(engine, lifecycleOwner) {
         var readyMemoryRecorded = false
-        lateinit var retryPlayback: Runnable
 
         fun recordReadyMemory() {
             if (readyMemoryRecorded) return
             readyMemoryRecorded = true
             PlaybackMemoryMonitor.record(context, "ready", videoPath, bmlMessageSource != null)
         }
-
-        fun createMediaSession() {
-            if (mediaSession != null) return
-            mediaSession =
-                MediaSession
-                    .Builder(context, sessionPlayer)
-                    .setCallback(LiveBroadcastSessionCallback)
-                    .build()
-        }
-
-        fun releaseMediaSession() {
-            mediaSession?.release()
-            mediaSession = null
-        }
-
-        fun scheduleRetry(error: PlaybackException? = null) {
-            if (retryScheduled) return
-
-            val delayMs = min(1_000L shl retryAttempt.coerceAtMost(4), 10_000L)
-            retryAttempt++
-            retryScheduled = true
-            currentOnPlaybackErrorChanged(
-                error?.localizedMessage?.let { "$it\n再接続します…" }
-                    ?: "ストリームが終了しました\n再接続します…",
-            )
-            Log.w(
-                "VisiomataPlayer",
-                "Playback interrupted; retrying in ${delayMs}ms (attempt $retryAttempt)",
-                error,
-            )
-            retryHandler.postDelayed(retryPlayback, delayMs)
-        }
-
-        retryPlayback =
-            Runnable {
-                retryScheduled = false
-                if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-                    return@Runnable
-                }
-
-                // Re-prepare the live media source from its default position. This also tears down
-                // failed renderers/codecs, which is necessary when a decoder dies during a format or
-                // resolution change.
-                // The BML demuxer is reset when the new DataSource opens, but its JavaScript runtime
-                // also owns PCR and carousel state. Reload it so the new stream cannot be interpreted
-                // against timestamps or modules retained from the interrupted connection.
-                bmlMessageSource?.setConsumer(null)
-                bmlMessageSource?.reset()
-                bmlInvisible = true
-                bmlVideoRect = null
-                bmlWebView?.reload()
-                deinterlaceMetadata?.clear()
-                player.seekToDefaultPosition()
-                player.prepare()
-                player.playWhenReady = true
-            }
 
         val listener =
             object : Player.Listener {
@@ -582,21 +315,25 @@ fun VisiomataPlayer(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    scheduleRetry(error)
+                    if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+                    resetBmlViewForNewStream()
+                    currentOnPlaybackErrorChanged(
+                        error.localizedMessage?.let { "$it\n再接続します…" }
+                            ?: "再生に失敗しました\n再接続します…",
+                    )
                 }
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     when (playbackState) {
                         Player.STATE_READY -> {
-                            retryHandler.removeCallbacks(retryPlayback)
-                            retryScheduled = false
-                            retryAttempt = 0
                             currentOnPlaybackErrorChanged(null)
                             recordReadyMemory()
                         }
 
                         Player.STATE_ENDED -> {
-                            scheduleRetry()
+                            if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+                            resetBmlViewForNewStream()
+                            currentOnPlaybackErrorChanged("ストリームが終了しました\n再接続します…")
                         }
                     }
                 }
@@ -605,25 +342,18 @@ fun VisiomataPlayer(
             LifecycleEventObserver { _, event ->
                 when (event) {
                     Lifecycle.Event.ON_START -> {
-                        createMediaSession()
-                        if (player.playerError != null || player.playbackState == Player.STATE_ENDED) {
-                            retryHandler.removeCallbacks(retryPlayback)
-                            retryScheduled = false
-                            retryHandler.post(retryPlayback)
-                        } else {
-                            player.play()
-                        }
+                        bmlWebView?.setActive(true)
+                        engine.start(::resetBmlViewForNewStream)
                     }
 
                     Lifecycle.Event.ON_STOP -> {
-                        retryHandler.removeCallbacks(retryPlayback)
-                        retryScheduled = false
-                        player.pause()
-                        releaseMediaSession()
+                        bmlWebView?.setActive(false)
+                        engine.stopStreaming()
+                        currentOnPlaybackErrorChanged(null)
                     }
 
                     else -> {
-                        Unit
+                        return@LifecycleEventObserver
                     }
                 }
             }
@@ -632,16 +362,16 @@ fun VisiomataPlayer(
         if (player.playbackState == Player.STATE_READY) recordReadyMemory()
         lifecycleOwner.lifecycle.addObserver(observer)
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-            createMediaSession()
+            bmlWebView?.setActive(true)
+            engine.start(::resetBmlViewForNewStream)
         }
         onDispose {
             PlaybackMemoryMonitor.record(context, "release-before", videoPath, bmlMessageSource != null)
-            retryHandler.removeCallbacks(retryPlayback)
             lifecycleOwner.lifecycle.removeObserver(observer)
             player.removeListener(listener)
-            releaseMediaSession()
-            player.release()
-            deinterlaceMetadata?.clear()
+            bmlWebView?.setActive(false)
+            engine.release()
+            currentOnBmlInputStateChanged(false, false, emptySet())
             currentOnPlaybackErrorChanged(null)
             currentOnAudioTracksChanged(emptyList())
             Handler(Looper.getMainLooper()).postDelayed(
@@ -742,6 +472,9 @@ fun VisiomataPlayer(
                                     ),
                                 )
                                 bmlWebView = webView
+                                webView.setActive(
+                                    lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+                                )
                             } finally {
                                 Trace.endSection()
                             }
@@ -780,9 +513,8 @@ fun VisiomataPlayer(
                     }
                 },
                 onRelease = { host ->
-                    // Break View -> player/surface references before Compose releases the host. WebView
-                    // destruction is idempotent because DisposableEffect and AndroidView can be disposed in
-                    // either order.
+                    // AndroidView exclusively owns and releases both view instances. The engine's
+                    // independent release path remains safe whichever disposal callback runs first.
                     val videoHost = host.getChildAt(0) as? FrameLayout
                     if (videoHost != null) {
                         for (index in 0 until videoHost.childCount) {
@@ -795,7 +527,10 @@ fun VisiomataPlayer(
                             }
                         }
                     }
-                    (host.getChildAt(1) as? BmlWebView)?.release()
+                    (host.getChildAt(1) as? BmlWebView)?.let { webView ->
+                        webView.release()
+                        if (bmlWebView === webView) bmlWebView = null
+                    }
                     host.removeAllViews()
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -845,7 +580,7 @@ private fun Tracks.audioTrackOptions(): List<AudioTrackOption> {
     }
 }
 
-private fun liveMediaItem(
+internal fun liveMediaItem(
     url: String,
     title: String?,
     subtitle: String?,
@@ -865,7 +600,7 @@ private fun liveMediaItem(
                 .build(),
         ).build()
 
-private object LiveBroadcastSessionCallback : MediaSession.Callback {
+internal object LiveBroadcastSessionCallback : MediaSession.Callback {
     override fun onConnect(
         session: MediaSession,
         controller: MediaSession.ControllerInfo,
@@ -885,7 +620,7 @@ private object LiveBroadcastSessionCallback : MediaSession.Callback {
  * and recovery code, while making unsupported pause and seek operations absent at the Player
  * boundary consumed by MediaSession.
  */
-private class LiveBroadcastPlayer(
+internal class LiveBroadcastPlayer(
     player: Player,
 ) : ForwardingSimpleBasePlayer(player) {
     override fun getState(): State {
