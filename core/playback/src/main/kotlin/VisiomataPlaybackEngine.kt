@@ -12,7 +12,6 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.TimestampAdjuster
-import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -73,7 +72,7 @@ internal class VisiomataPlaybackEngine(
 
     val bmlMessageSource: BmlMessageSource? = createBmlMessageSource(config)
     private val bmlTsDemuxer = bmlMessageSource as? BmlTsDemuxer
-    private val tsStreamRelay = bmlTsDemuxer?.let(::TsStreamRelay)
+    private val tsStreamRelay = TsStreamRelay(bmlTsDemuxer, ::onAudioPidsAdded)
     private val deinterlaceMetadata =
         if (config.transcodeMpeg2Video) DeinterlaceMetadataQueue() else null
     private val deinterlaceEffect =
@@ -184,12 +183,26 @@ internal class VisiomataPlaybackEngine(
 
     private fun reconnectInternal(resetSource: Boolean = true) {
         if (!streaming || released.get()) return
+        tsStreamRelay.invalidate()
         if (resetSource) bmlMessageSource?.reset()
         bmlMessageSource?.start()
         deinterlaceMetadata?.clear()
-        player.seekToDefaultPosition()
+        // A fresh source also creates a fresh extractor and discovers the current PMT tracks.
+        player.setMediaItem(liveMediaItem(config.url, config.mediaTitle, config.mediaSubtitle, config.mediaArtworkData))
         player.prepare()
         player.playWhenReady = true
+    }
+
+    private fun onAudioPidsAdded(generation: Long) {
+        retryHandler.post {
+            if (!streaming || released.get() || tsStreamRelay.generation != generation) return@post
+            Log.i("VisiomataPlayer", "AAC PID added to PMT; rebuilding the live media source")
+            retryHandler.removeCallbacks(retryPlayback)
+            retryScheduled = false
+            val playWhenReady = player.playWhenReady
+            reconnectInternal()
+            player.playWhenReady = playWhenReady
+        }
     }
 
     private fun scheduleRetry(error: PlaybackException? = null) {
@@ -223,9 +236,7 @@ internal class VisiomataPlaybackEngine(
     private fun createPlayer(): ExoPlayer {
         val subtitleParserFactory = VisiomataSubtitleParserFactory(config.aribFontFiles)
         val httpDataSourceFactory = createHttpDataSourceFactory()
-        val dataSourceFactory: DataSource.Factory =
-            tsStreamRelay?.let { RelayingDataSourceFactory(httpDataSourceFactory, it) }
-                ?: httpDataSourceFactory
+        val dataSourceFactory = RelayingDataSourceFactory(httpDataSourceFactory, tsStreamRelay)
         logConfiguration(config)
         val builder =
             ExoPlayer

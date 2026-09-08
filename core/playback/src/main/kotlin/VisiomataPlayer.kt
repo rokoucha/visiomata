@@ -343,6 +343,8 @@ fun VisiomataPlayer(
         val listener =
             object : Player.Listener {
                 override fun onTracksChanged(tracks: Tracks) {
+                    // A recreated media source has new track groups; reapply the selected audio ID.
+                    audioStateRevision++
                     currentOnAudioTracksChanged(tracks.audioTrackOptions(engine.audioComponentState))
                 }
 

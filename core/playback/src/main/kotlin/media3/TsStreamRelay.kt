@@ -10,10 +10,17 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
 import net.rokoucha.visiomata.playback.bml.BmlTsDemuxer
+import java.util.concurrent.atomic.AtomicLong
 
 internal class TsStreamRelay(
-    private val demuxer: BmlTsDemuxer,
+    private val demuxer: BmlTsDemuxer? = null,
+    private val onAudioPidsAdded: (Long) -> Unit = {},
 ) {
+    private val generationCounter = AtomicLong()
+    val generation: Long get() = generationCounter.get()
+    private var streamGeneration = 0L
+
+    private val audioMonitor = TsAudioPmtMonitor { onAudioPidsAdded(streamGeneration) }
     private val partialPacket = ByteArray(packetSize)
     private var partialSize = 0
     private var lastPublishedPcrBase = unsetPcrBase
@@ -27,19 +34,24 @@ internal class TsStreamRelay(
         try {
             scanTransportStream(source, offset, length)
         } catch (error: Exception) {
-            // Data broadcasting is optional and must never make Media3's upstream read fail.
-            Log.e("BmlTsDemuxer", "Dropping a failed BML demux chunk", error)
+            // Side-channel monitoring must never make Media3's upstream read fail.
+            Log.e("TsStreamRelay", "Dropping a failed transport stream monitoring chunk", error)
         }
     }
 
     fun reset() {
+        streamGeneration = generationCounter.incrementAndGet()
+        audioMonitor.reset()
         partialSize = 0
         lastPublishedPcrBase = unsetPcrBase
         psiAssemblers.clear()
-        demuxer.reset()
+        demuxer?.reset()
     }
 
-    fun close() = Unit
+    /** Invalidates queued notifications immediately, before the loader closes the old source. */
+    fun invalidate() {
+        generationCounter.incrementAndGet()
+    }
 
     private fun scanTransportStream(
         source: ByteArray,
@@ -48,7 +60,11 @@ internal class TsStreamRelay(
     ) {
         var position = offset
         val limit = offset + length
-        if (partialSize > 0) {
+        while (position < limit) {
+            if (partialSize == 0 && (source[position].toInt() and 0xff) != syncByte) {
+                position++
+                continue
+            }
             val count = minOf(packetSize - partialSize, limit - position)
             source.copyInto(partialPacket, partialSize, position, position + count)
             partialSize += count
@@ -58,18 +74,6 @@ internal class TsStreamRelay(
                 partialSize = 0
             }
         }
-        while (position + packetSize <= limit) {
-            if ((source[position].toInt() and 0xff) != syncByte) {
-                position++
-                continue
-            }
-            consumePacket(source, position)
-            position += packetSize
-        }
-        if (position < limit) {
-            partialSize = limit - position
-            source.copyInto(partialPacket, 0, position, limit)
-        }
     }
 
     private fun consumePacket(
@@ -77,26 +81,35 @@ internal class TsStreamRelay(
         start: Int,
     ) {
         if ((packet[start].toInt() and 0xff) != syncByte) return
-        if (packet[start + 1].toInt() and 0x80 != 0) return
         val payloadUnitStart = packet[start + 1].toInt() and 0x40 != 0
         val pid = ((packet[start + 1].toInt() and 0x1f) shl 8) or (packet[start + 2].toInt() and 0xff)
+        if (packet[start + 1].toInt() and 0x80 != 0 || packet[start + 3].toInt() and 0xc0 != 0) {
+            psiAssemblers[pid]?.reset()
+            return
+        }
         val adaptationControl = (packet[start + 3].toInt() ushr 4) and 3
         var payload = start + 4
         if (adaptationControl == 2 || adaptationControl == 3) {
             val adaptationLength = packet[payload].toInt() and 0xff
             if (payload + 1 + adaptationLength > start + packetSize) return
+            if (adaptationLength > 0 && packet[payload + 1].toInt() and 0x80 != 0) {
+                psiAssemblers[pid]?.reset()
+            }
             if (adaptationLength >= 7 && packet[payload + 1].toInt() and 0x10 != 0) {
                 publishPcr(packet, payload + 2)
             }
             payload += adaptationLength + 1
         }
         if ((adaptationControl != 1 && adaptationControl != 3) || payload >= start + packetSize) return
-        if (pid == nitPid || pid == sdtPid) {
+        if (audioMonitor.acceptsPid(pid) || (demuxer != null && (pid == nitPid || pid == sdtPid))) {
             val continuityCounter = packet[start + 3].toInt() and 0x0f
             psiAssemblers
                 .getOrPut(pid) { PsiSectionAssembler() }
                 .push(packet, payload, start + packetSize, payloadUnitStart, continuityCounter)
-                .forEach(::consumePsiSection)
+                .forEach { section ->
+                    audioMonitor.consume(pid, section)
+                    if (pid == nitPid || pid == sdtPid) consumePsiSection(section)
+                }
         }
     }
 
@@ -104,6 +117,7 @@ internal class TsStreamRelay(
         packet: ByteArray,
         p: Int,
     ) {
+        val demuxer = demuxer ?: return
         val base =
             ((packet[p].toLong() and 0xff) shl 25) or
                 ((packet[p + 1].toLong() and 0xff) shl 17) or
@@ -120,11 +134,11 @@ internal class TsStreamRelay(
     private fun consumePsiSection(section: ByteArray) {
         when (section.firstOrNull()?.toInt()?.and(0xff)) {
             0x40 -> {
-                if (section.size >= 8) demuxer.updateProgramIds(null, null, u16(section, 3))
+                if (section.size >= 8) demuxer?.updateProgramIds(null, null, u16(section, 3))
             }
 
             0x42 -> {
-                if (section.size >= 12) demuxer.updateProgramIds(u16(section, 8), u16(section, 3), null)
+                if (section.size >= 12) demuxer?.updateProgramIds(u16(section, 8), u16(section, 3), null)
             }
         }
     }
@@ -145,11 +159,12 @@ internal class TsStreamRelay(
     }
 }
 
-private class PsiSectionAssembler {
+internal class PsiSectionAssembler {
     private var data = ByteArray(4096)
     private var size = 0
     private var expectedSize = -1
     private var continuityCounter = -1
+    private var waitingForStart = true
 
     fun push(
         packet: ByteArray,
@@ -158,17 +173,25 @@ private class PsiSectionAssembler {
         unitStart: Boolean,
         counter: Int,
     ): List<ByteArray> {
+        if (counter == continuityCounter) return emptyList()
         if (continuityCounter >= 0 && counter != ((continuityCounter + 1) and 0x0f)) reset()
         continuityCounter = counter
+        if (waitingForStart && !unitStart) return emptyList()
         val sections = mutableListOf<ByteArray>()
         var position = payloadStart
         if (unitStart) {
             if (position >= payloadEnd) return sections
             val pointer = packet[position].toInt() and 0xff
             position++
-            val previousEnd = minOf(position + pointer, payloadEnd)
-            append(packet, position, previousEnd, sections)
-            if (size != 0) reset()
+            val previousEnd = position + pointer
+            if (previousEnd > payloadEnd) {
+                reset()
+                return sections
+            }
+            if (!waitingForStart && size > 0) append(packet, position, previousEnd, sections)
+            size = 0
+            expectedSize = -1
+            waitingForStart = false
             position = previousEnd
         }
         append(packet, position, payloadEnd, sections)
@@ -202,7 +225,9 @@ private class PsiSectionAssembler {
         }
     }
 
-    private fun reset() {
+    fun reset() {
+        waitingForStart = true
+        continuityCounter = -1
         size = 0
         expectedSize = -1
     }
@@ -251,7 +276,7 @@ private class RelayingDataSource(
         try {
             upstream.close()
         } finally {
-            relay.close()
+            relay.invalidate()
         }
     }
 }
