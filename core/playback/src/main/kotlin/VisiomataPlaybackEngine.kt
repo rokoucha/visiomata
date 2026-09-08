@@ -49,7 +49,6 @@ internal data class VisiomataPlaybackEngineConfig(
     val dataBroadcastingEnabled: Boolean,
     val mahironApiRoot: String?,
     val serviceId: Long?,
-    val audioComponents: List<BroadcastAudioComponent>,
     val mediaTitle: String?,
     val mediaSubtitle: String?,
     val mediaArtworkData: ByteArray?,
@@ -61,6 +60,7 @@ internal data class VisiomataPlaybackEngineConfig(
 internal class VisiomataPlaybackEngine(
     context: Context,
     private val config: VisiomataPlaybackEngineConfig,
+    initialAudioComponents: List<BroadcastAudioComponent> = emptyList(),
 ) {
     private val applicationContext = context.applicationContext
     private val retryHandler = Handler(Looper.getMainLooper())
@@ -69,6 +69,7 @@ internal class VisiomataPlaybackEngine(
     private var retryAttempt = 0
     private var retryScheduled = false
     private var mediaSession: MediaSession? = null
+    internal val audioComponentState = AudioComponentState(initialAudioComponents)
 
     val bmlMessageSource: BmlMessageSource? = createBmlMessageSource(config)
     private val bmlTsDemuxer = bmlMessageSource as? BmlTsDemuxer
@@ -169,7 +170,17 @@ internal class VisiomataPlaybackEngine(
         player.release()
         bmlMessageSource?.release()
         deinterlaceMetadata?.clear()
+        audioComponentState.release()
     }
+
+    fun updateAudioComponents(components: List<BroadcastAudioComponent>): Boolean =
+        !released.get() && audioComponentState.updateComponents(components)
+
+    fun addAudioStateListener(listener: () -> Unit) = audioComponentState.addListener(listener)
+
+    fun removeAudioStateListener(listener: () -> Unit) = audioComponentState.removeListener(listener)
+
+    fun isReleased(): Boolean = released.get()
 
     private fun reconnectInternal(resetSource: Boolean = true) {
         if (!streaming || released.get()) return
@@ -275,6 +286,7 @@ internal class VisiomataPlaybackEngine(
 
     private fun createExtractorsFactory(subtitleParserFactory: VisiomataSubtitleParserFactory): ExtractorsFactory =
         ExtractorsFactory {
+            val streamGeneration = audioComponentState.beginStream()
             arrayOf<Extractor>(
                 TsExtractor(
                     TsExtractor.MODE_SINGLE_PMT,
@@ -285,7 +297,8 @@ internal class VisiomataPlaybackEngine(
                         transcodeMpeg2Video = config.transcodeMpeg2Video,
                         deinterlaceMetadata = deinterlaceMetadata,
                         bmlDemuxer = bmlTsDemuxer,
-                        audioComponents = config.audioComponents,
+                        audioComponentState = audioComponentState,
+                        streamGeneration = streamGeneration,
                     ),
                     TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES,
                 ),

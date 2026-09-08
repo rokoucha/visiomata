@@ -10,6 +10,8 @@ import androidx.media3.extractor.ExtractorOutput
 import androidx.media3.extractor.TrackOutput
 import androidx.media3.extractor.ts.ElementaryStreamReader
 import androidx.media3.extractor.ts.TsPayloadReader
+import net.rokoucha.visiomata.playback.AudioComponentState
+import net.rokoucha.visiomata.playback.aribAudioFormatId
 import java.lang.ref.Cleaner
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -34,11 +36,13 @@ internal object AribAacNative {
 
 @UnstableApi
 internal class AribAacReader(
-    private val mainLanguage: String?,
-    private val subLanguage: String?,
+    private val componentTag: Int?,
+    private val descriptorMainLanguage: String?,
+    private val descriptorSubLanguage: String?,
     private val roleFlags: Int,
-    private val exposeSubTrack: Boolean,
-    private val isMainComponent: Boolean?,
+    private val descriptorIsMainComponent: Boolean?,
+    private val audioComponentState: AudioComponentState,
+    private val streamGeneration: Long,
 ) : ElementaryStreamReader {
     private class NativeState(
         val handle: Long,
@@ -51,9 +55,12 @@ internal class AribAacReader(
     @Suppress("unused")
     private val cleanable = cleaner.register(this, nativeState)
     private lateinit var mainOutput: TrackOutput
-    private var subOutput: TrackOutput? = null
+    private lateinit var subOutput: TrackOutput
     private lateinit var mainFormatId: String
     private var subFormatId: String? = null
+    private lateinit var streamKey: String
+    var mainTrackId: Int = C.INDEX_UNSET
+        private set
     private var nextTimeUs = C.TIME_UNSET
     private var lastConfig: AacConfig? = null
 
@@ -68,13 +75,13 @@ internal class AribAacReader(
         idGenerator: TsPayloadReader.TrackIdGenerator,
     ) {
         idGenerator.generateNewId()
-        mainFormatId = idGenerator.formatId
-        mainOutput = extractorOutput.track(idGenerator.trackId, C.TRACK_TYPE_AUDIO)
-        if (exposeSubTrack) {
-            idGenerator.generateNewId()
-            subFormatId = idGenerator.formatId
-            subOutput = extractorOutput.track(idGenerator.trackId, C.TRACK_TYPE_AUDIO)
-        }
+        streamKey = componentTag?.let { "component-$it" } ?: "track-${idGenerator.formatId}"
+        mainFormatId = aribAudioFormatId(streamKey, isSub = false)
+        mainTrackId = idGenerator.trackId
+        mainOutput = extractorOutput.track(mainTrackId, C.TRACK_TYPE_AUDIO)
+        idGenerator.generateNewId()
+        subFormatId = aribAudioFormatId(streamKey, isSub = true)
+        subOutput = extractorOutput.track(idGenerator.trackId, C.TRACK_TYPE_AUDIO)
     }
 
     override fun packetStarted(
@@ -121,10 +128,12 @@ internal class AribAacReader(
                     val main = input.readBytes("main AAC access unit")
                     val sub = input.readBytes("sub AAC access unit")
                     val config = AacConfig(sampleRate, channelCount, configBytes)
-                    updateFormats(config)
+                    val isDualMono = sub.isNotEmpty()
+                    audioComponentState.updateDualMono(streamKey, streamGeneration, isDualMono)
+                    updateFormats(config, isDualMono)
                     if (nextTimeUs != C.TIME_UNSET) {
                         writeSample(mainOutput, main, nextTimeUs)
-                        if (sub.isNotEmpty()) subOutput?.let { writeSample(it, sub, nextTimeUs) }
+                        if (isDualMono) writeSample(subOutput, sub, nextTimeUs)
                         nextTimeUs += C.MICROS_PER_SECOND * 1024L / sampleRate
                     }
                 }
@@ -141,18 +150,43 @@ internal class AribAacReader(
         require(!input.hasRemaining()) { "Trailing ARIB AAC normalizer output" }
     }
 
-    private fun updateFormats(config: AacConfig) {
-        if (lastConfig == config) return
+    private var lastPresentation: Presentation? = null
+
+    private fun updateFormats(
+        config: AacConfig,
+        isDualMono: Boolean,
+    ) {
+        val eventAudio = audioComponentState.component(componentTag)
+        val presentation =
+            Presentation(
+                mainLanguage = eventAudio?.languages?.getOrNull(0) ?: descriptorMainLanguage,
+                subLanguage = eventAudio?.languages?.getOrNull(1) ?: descriptorSubLanguage,
+                isMainComponent = eventAudio?.isMain ?: descriptorIsMainComponent,
+                isDualMono = isDualMono,
+            )
+        if (lastConfig == config && lastPresentation == presentation) return
         val mainLabel =
             when {
-                exposeSubTrack -> "第一音声"
-                isMainComponent == true -> "主音声"
-                isMainComponent == false -> "副音声"
+                isDualMono -> "第一音声"
+                presentation.isMainComponent == true -> "主音声"
+                presentation.isMainComponent == false -> "副音声"
                 else -> "音声"
             }
-        mainOutput.format(audioFormat(mainFormatId, mainLanguage, mainLabel, config, true))
-        subOutput?.format(audioFormat(checkNotNull(subFormatId), subLanguage, "第二音声", config, false))
+        mainOutput.format(
+            audioFormat(
+                mainFormatId,
+                presentation.mainLanguage,
+                mainLabel,
+                config,
+                audioComponentState.isComponentAvailable(componentTag) && presentation.isMainComponent != false,
+            ),
+        )
+        // ProgressiveMediaPeriod waits for every TrackOutput to receive a Format before preparing.
+        // Register the dormant output up front, but expose it in the UI only after AAC proves that
+        // the stream is dual mono.
+        subOutput.format(audioFormat(checkNotNull(subFormatId), presentation.subLanguage, "第二音声", config, false))
         lastConfig = config
+        lastPresentation = presentation
     }
 
     private fun audioFormat(
@@ -208,6 +242,13 @@ internal class AribAacReader(
 
         override fun hashCode(): Int = 31 * (31 * sampleRate + channelCount) + initializationData.contentHashCode()
     }
+
+    private data class Presentation(
+        val mainLanguage: String?,
+        val subLanguage: String?,
+        val isMainComponent: Boolean?,
+        val isDualMono: Boolean,
+    )
 
     private companion object {
         const val TAG = "AribAacReader"

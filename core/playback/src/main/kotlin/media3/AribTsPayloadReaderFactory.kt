@@ -19,7 +19,7 @@ import androidx.media3.extractor.ts.SectionPayloadReader
 import androidx.media3.extractor.ts.SectionReader
 import androidx.media3.extractor.ts.TsExtractor
 import androidx.media3.extractor.ts.TsPayloadReader
-import net.rokoucha.visiomata.playback.BroadcastAudioComponent
+import net.rokoucha.visiomata.playback.AudioComponentState
 import net.rokoucha.visiomata.playback.bml.BmlTsDemuxer
 import net.rokoucha.visiomata.playback.mpeg2toh264.DeinterlaceMetadataQueue
 import net.rokoucha.visiomata.playback.mpeg2toh264.TranscodingH262Reader
@@ -30,7 +30,8 @@ internal class AribTsPayloadReaderFactory(
     private val transcodeMpeg2Video: Boolean = false,
     private val deinterlaceMetadata: DeinterlaceMetadataQueue? = null,
     private val bmlDemuxer: BmlTsDemuxer? = null,
-    private val audioComponents: List<BroadcastAudioComponent> = emptyList(),
+    private val audioComponentState: AudioComponentState = AudioComponentState(emptyList()),
+    private val streamGeneration: Long = 0,
 ) : TsPayloadReader.Factory {
     private val delegate = DefaultTsPayloadReaderFactory()
 
@@ -41,7 +42,7 @@ internal class AribTsPayloadReaderFactory(
         esInfo: TsPayloadReader.EsInfo,
     ): TsPayloadReader? {
         val component = esInfo.aribComponentInfo()
-        val eventAudio = audioComponents.firstOrNull { it.componentTag == component?.componentId }
+        var componentTrackId: (() -> Int)? = null
         // TsExtractor replaces PMT stream_type 0x06 with EsInfo.streamType before calling us.
         // ARIB's data_component_descriptor isn't one of Media3's built-in mappings, so that value is
         // C.INDEX_UNSET (-1). The descriptor itself is therefore the authoritative identification.
@@ -51,29 +52,25 @@ internal class AribTsPayloadReaderFactory(
             } else if (transcodeMpeg2Video && streamType == TsExtractor.TS_STREAM_TYPE_H262) {
                 PesReader(TranscodingH262Reader(checkNotNull(deinterlaceMetadata)))
             } else if (streamType == TsExtractor.TS_STREAM_TYPE_AAC_ADTS) {
-                PesReader(
+                val aacReader =
                     AribAacReader(
-                        mainLanguage =
-                            eventAudio?.languages?.getOrNull(0)
-                                ?: component?.languages?.getOrNull(0)
-                                ?: esInfo.language,
-                        subLanguage =
-                            eventAudio?.languages?.getOrNull(1)
-                                ?: component?.languages?.getOrNull(1),
+                        componentTag = component?.componentId,
+                        descriptorMainLanguage = component?.languages?.getOrNull(0) ?: esInfo.language,
+                        descriptorSubLanguage = component?.languages?.getOrNull(1),
                         roleFlags = esInfo.roleFlags,
-                        exposeSubTrack =
-                            eventAudio?.isDualMono == true ||
-                                component?.audioMode == dualMonoAudioMode,
-                        isMainComponent = eventAudio?.isMain ?: component?.isMainAudio,
-                    ),
-                )
+                        descriptorIsMainComponent = component?.isMainAudio,
+                        audioComponentState = audioComponentState,
+                        streamGeneration = streamGeneration,
+                    )
+                componentTrackId = { aacReader.mainTrackId }
+                PesReader(aacReader)
             } else if (esInfo.hasAribCaptionDescriptor()) {
                 AribCaptionPesReader(esInfo.language)
             } else {
                 delegate.createPayloadReader(streamType, esInfo)
             }
         return if (reader != null && component?.componentId != null && reader !is SectionReader && bmlDemuxer != null) {
-            ComponentTrackingReader(reader, bmlDemuxer, streamType, component)
+            ComponentTrackingReader(reader, bmlDemuxer, streamType, component, componentTrackId)
         } else {
             reader
         }
@@ -174,7 +171,6 @@ internal class AribTsPayloadReaderFactory(
         const val dataCarouselStreamType = 0x0D
         const val minimumAudioComponentLength = 9
         const val audioModeMask = 0x1F
-        const val dualMonoAudioMode = 0x02
     }
 }
 
@@ -217,6 +213,7 @@ private class ComponentTrackingReader(
     private val demuxer: BmlTsDemuxer,
     private val streamType: Int,
     private val component: AribTsPayloadReaderFactory.AribComponentInfo,
+    private val componentTrackId: (() -> Int)? = null,
 ) : TsPayloadReader by delegate {
     override fun init(
         timestampAdjuster: TimestampAdjuster,
@@ -225,7 +222,7 @@ private class ComponentTrackingReader(
     ) {
         delegate.init(timestampAdjuster, extractorOutput, idGenerator)
         demuxer.registerComponent(
-            idGenerator.trackId,
+            componentTrackId?.invoke()?.takeUnless { it == C.INDEX_UNSET } ?: idGenerator.trackId,
             component.componentId ?: return,
             streamType,
             component.dataComponentId,

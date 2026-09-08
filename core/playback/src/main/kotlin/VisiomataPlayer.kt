@@ -19,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -202,7 +203,6 @@ fun VisiomataPlayer(
             mahironApiRoot,
             serviceId,
             memoryPolicy,
-            audioComponents,
             transcodeMpeg2Video,
         ) {
             VisiomataPlaybackEngine(
@@ -219,17 +219,21 @@ fun VisiomataPlayer(
                     dataBroadcastingEnabled = dataBroadcastingEnabled,
                     mahironApiRoot = mahironApiRoot,
                     serviceId = serviceId,
-                    audioComponents = audioComponents,
                     mediaTitle = mediaTitle,
                     mediaSubtitle = mediaSubtitle,
                     mediaArtworkData = mediaArtworkData,
                     aribFontFiles = aribFontFiles,
                     memoryPolicy = memoryPolicy,
                 ),
+                initialAudioComponents = audioComponents,
             )
         }
     val bmlMessageSource = engine.bmlMessageSource
     val player = engine.player
+    var audioStateRevision by remember(engine) { mutableIntStateOf(0) }
+    LaunchedEffect(engine, audioComponents) {
+        engine.updateAudioComponents(audioComponents)
+    }
     var bmlInvisible by remember(bmlMessageSource) { mutableStateOf(true) }
     var bmlDocumentLoaded by remember(bmlMessageSource) { mutableStateOf(false) }
     var bmlUsedKeyGroups by remember(bmlMessageSource) { mutableStateOf(emptySet<String>()) }
@@ -262,22 +266,50 @@ fun VisiomataPlayer(
             webView.dispatchRemoteKey(event.key, event.isDown)
         }
     }
-    LaunchedEffect(player, selectedAudioTrackId) {
+    LaunchedEffect(player, selectedAudioTrackId, audioStateRevision) {
         val trackId = selectedAudioTrackId ?: return@LaunchedEffect
-        player.currentTracks.groups.forEachIndexed { groupIndex, group ->
-            if (group.type != C.TRACK_TYPE_AUDIO) return@forEachIndexed
+        var fallback: Pair<Tracks.Group, Int>? = null
+        var fallbackPriority = -1
+        player.currentTracks.groups.forEach { group ->
+            if (group.type != C.TRACK_TYPE_AUDIO) return@forEach
             for (trackIndex in 0 until group.length) {
-                if (audioTrackId(groupIndex, trackIndex) == trackId && group.isTrackSupported(trackIndex)) {
-                    player.trackSelectionParameters =
-                        player.trackSelectionParameters
-                            .buildUpon()
-                            .setOverrideForType(
-                                TrackSelectionOverride(group.mediaTrackGroup, trackIndex),
-                            ).build()
+                val format = group.getTrackFormat(trackIndex)
+                val priority = engine.audioComponentState.selectionPriority(format.id)
+                if (group.isTrackSupported(trackIndex) && priority > fallbackPriority) {
+                    fallback = group to trackIndex
+                    fallbackPriority = priority
+                }
+                if (
+                    audioTrackId(group, trackIndex) == trackId &&
+                    group.isTrackSupported(trackIndex) &&
+                    engine.audioComponentState.isAudioTrackAvailable(format.id)
+                ) {
+                    if (!group.isTrackSelected(trackIndex)) {
+                        player.trackSelectionParameters =
+                            player.trackSelectionParameters
+                                .buildUpon()
+                                .setOverrideForType(
+                                    TrackSelectionOverride(group.mediaTrackGroup, trackIndex),
+                                ).build()
+                    }
                     return@LaunchedEffect
                 }
             }
         }
+        val fallbackTrack = fallback
+        player.trackSelectionParameters =
+            if (fallbackTrack != null) {
+                player.trackSelectionParameters
+                    .buildUpon()
+                    .setOverrideForType(
+                        TrackSelectionOverride(fallbackTrack.first.mediaTrackGroup, fallbackTrack.second),
+                    ).build()
+            } else {
+                player.trackSelectionParameters
+                    .buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                    .build()
+            }
     }
     LaunchedEffect(player, url, mediaTitle, mediaSubtitle, mediaArtworkData) {
         val mediaItem = liveMediaItem(url, mediaTitle, mediaSubtitle, mediaArtworkData)
@@ -311,7 +343,7 @@ fun VisiomataPlayer(
         val listener =
             object : Player.Listener {
                 override fun onTracksChanged(tracks: Tracks) {
-                    currentOnAudioTracksChanged(tracks.audioTrackOptions())
+                    currentOnAudioTracksChanged(tracks.audioTrackOptions(engine.audioComponentState))
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
@@ -338,6 +370,17 @@ fun VisiomataPlayer(
                     }
                 }
             }
+
+        fun invalidateAudioTracks() {
+            Handler(Looper.getMainLooper()).post {
+                if (engine.isReleased() || !engine.player.isCommandAvailable(Player.COMMAND_GET_TRACKS)) return@post
+                audioStateRevision++
+                currentOnAudioTracksChanged(
+                    engine.player.currentTracks.audioTrackOptions(engine.audioComponentState),
+                )
+            }
+        }
+        val audioStateListener = ::invalidateAudioTracks
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {
@@ -358,7 +401,8 @@ fun VisiomataPlayer(
                 }
             }
         player.addListener(listener)
-        currentOnAudioTracksChanged(player.currentTracks.audioTrackOptions())
+        engine.addAudioStateListener(audioStateListener)
+        currentOnAudioTracksChanged(player.currentTracks.audioTrackOptions(engine.audioComponentState))
         if (player.playbackState == Player.STATE_READY) recordReadyMemory()
         lifecycleOwner.lifecycle.addObserver(observer)
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
@@ -369,6 +413,7 @@ fun VisiomataPlayer(
             PlaybackMemoryMonitor.record(context, "release-before", videoPath, bmlMessageSource != null)
             lifecycleOwner.lifecycle.removeObserver(observer)
             player.removeListener(listener)
+            engine.removeAudioStateListener(audioStateListener)
             bmlWebView?.setActive(false)
             engine.release()
             currentOnBmlInputStateChanged(false, false, emptySet())
@@ -540,28 +585,33 @@ fun VisiomataPlayer(
 }
 
 private fun audioTrackId(
-    groupIndex: Int,
+    group: Tracks.Group,
     trackIndex: Int,
-): String = "$groupIndex:$trackIndex"
+): String =
+    group.getTrackFormat(trackIndex).id?.takeIf(String::isNotBlank)
+        ?: "${group.mediaTrackGroup.id}:$trackIndex"
 
-private fun Tracks.audioTrackOptions(): List<AudioTrackOption> {
+internal fun Tracks.audioTrackOptions(audioComponentState: AudioComponentState): List<AudioTrackOption> {
     val audioGroups = groups.withIndex().filter { it.value.type == C.TRACK_TYPE_AUDIO }
     val trackCount = audioGroups.sumOf { it.value.length }
     val options =
         buildList {
-            audioGroups.forEach { (groupIndex, group) ->
+            audioGroups.forEach { (_, group) ->
                 for (trackIndex in 0 until group.length) {
                     val format = group.getTrackFormat(trackIndex)
+                    if (!audioComponentState.isAudioTrackAvailable(format.id)) continue
                     val fallbackLabel = if (trackCount > 1) "音声${size + 1}" else "音声"
+                    val presentation =
+                        audioComponentState.presentation(format.id, format.language, format.label)
                     val details =
                         buildList {
-                            format.language?.takeUnless { it == "und" }?.let(::add)
+                            presentation.language?.takeUnless { it == "und" }?.let(::add)
                             format.channelCount.takeIf { it > 0 }?.let { add("${it}ch") }
                         }
-                    val name = format.label?.takeIf(String::isNotBlank) ?: fallbackLabel
+                    val name = presentation.label?.takeIf(String::isNotBlank) ?: fallbackLabel
                     add(
                         AudioTrackOption(
-                            id = audioTrackId(groupIndex, trackIndex),
+                            id = audioTrackId(group, trackIndex),
                             label = if (details.isEmpty()) name else "$name (${details.joinToString(" / ")})",
                             selected = group.isTrackSelected(trackIndex),
                             supported = group.isTrackSupported(trackIndex),
