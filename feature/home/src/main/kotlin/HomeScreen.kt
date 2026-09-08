@@ -361,7 +361,20 @@ private fun StationLogo(
 }
 
 @Composable
-private fun CurrentProgram(program: Program) {
+private fun MissingProgramInformation() {
+    Text(
+        "番組情報なし",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun CurrentProgram(program: Program?) {
+    if (program == null) {
+        MissingProgramInformation()
+        return
+    }
     Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -694,9 +707,13 @@ private fun TvServiceCard(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TvCurrentProgram(
-    program: Program,
+    program: Program?,
     focused: Boolean,
 ) {
+    if (program == null) {
+        MissingProgramInformation()
+        return
+    }
     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(

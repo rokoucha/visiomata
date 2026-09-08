@@ -988,6 +988,10 @@ private class HomeState(
         isLoadingChannel = !hasCachedContent
         try {
             guideUseCases.selectChannelType(settings, type)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            Log.e(APP_LOG_TAG, "Home program refresh failed", error)
         } finally {
             if (selectedType == type) isLoadingChannel = false
         }

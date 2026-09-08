@@ -8,6 +8,57 @@ class ProgramGuideTest {
     private val now = Instant.parse("2026-08-29T12:00:00Z")
 
     @Test
+    fun `lists services before any program data arrives`() {
+        val gr = service(10, 16, "GR", 100, remoteControlKeyId = 9)
+        val bs = service(20, 211, "BS", 200)
+        val groups = ProgramGuide(listOf(bs, gr), emptyList()).serviceGroups(now)
+
+        assertEquals(listOf(10L, 20L), groups.map { it.primaryServiceId })
+        assertEquals(listOf("10", "20"), groups.map { it.id })
+        assertEquals(listOf(null, null), groups.map { it.current })
+    }
+
+    @Test
+    fun `keeps services with missing expired or future only programs`() {
+        val missing = service(10, 16, "GR", 100)
+        val expired = service(20, 17, "GR", 200)
+        val future = service(30, 18, "GR", 300)
+        val next = program(future, offsetMinutes = 60)
+        val groups =
+            ProgramGuide(
+                listOf(missing, expired, future),
+                listOf(program(expired, offsetMinutes = -120), next),
+            ).serviceGroups(now)
+
+        assertEquals(listOf(10L, 20L, 30L), groups.map { it.primaryServiceId })
+        assertEquals(listOf(null, null, null), groups.map { it.current })
+        assertEquals(next, groups.last().next)
+    }
+
+    @Test
+    fun `does not hide primary or subchannel while either program is missing`() {
+        val main = service(10, 16, "GR", 100, remoteControlKeyId = 9)
+        val sub = service(20, 17, "GR", 100, remoteControlKeyId = 9)
+        listOf(emptyList(), listOf(program(main)), listOf(program(sub))).forEach { programs ->
+            val groups = ProgramGuide(listOf(sub, main), programs).serviceGroups(now)
+
+            assertEquals(listOf(10L, 20L), groups.map { it.primaryServiceId })
+        }
+    }
+
+    @Test
+    fun `adds program data without changing service card identity`() {
+        val station = service(10, 16, "GR", 100)
+        val services = listOf(station)
+        val initial = ProgramGuide(services, emptyList()).serviceGroups(now).single()
+        val current = program(station)
+        val loaded = ProgramGuide(services, listOf(current)).serviceGroups(now).single()
+
+        assertEquals(initial.copy(current = current), loaded)
+        assertEquals(initial, ProgramGuide(services, listOf(current)).serviceGroups(current.endAt).single())
+    }
+
+    @Test
     fun `detects dual mono from the audio component type`() {
         assertEquals(true, ProgramAudio(0x02, 0x10, true).isDualMono)
         assertEquals(true, ProgramAudio(0x42, 0x10, true).isDualMono)

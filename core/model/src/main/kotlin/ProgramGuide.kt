@@ -137,7 +137,7 @@ data class ServiceGroup(
     val serviceName: String,
     val logoLabel: String,
     val logoId: Int?,
-    val current: Program,
+    val current: Program?,
     val next: Program?,
     val variants: List<ServiceVariant>,
 ) {
@@ -223,12 +223,11 @@ data class ProgramGuide(
 
     fun serviceGroups(at: Instant = Instant.now()): List<ServiceGroup> {
         val entries =
-            services.mapNotNull { service ->
+            services.map { service ->
                 val schedule = schedule(service)
                 val current =
                     schedule.lastOrNull { !at.isBefore(it.startAt) && at.isBefore(it.endAt) }
-                        ?: return@mapNotNull null
-                Entry(service, current, schedule.firstOrNull { !it.startAt.isBefore(current.endAt) })
+                Entry(service, current, schedule.firstOrNull { !it.startAt.isBefore(current?.endAt ?: at) })
             }
         val visibleEntries =
             entries.groupBy { it.service.stationGroupKey() }.values.flatMap { group ->
@@ -240,8 +239,12 @@ data class ProgramGuide(
                     group
                         .asSequence()
                         .filter { it != primary }
-                        .filter { !it.current.isSameBroadcastAs(primary.current) }
-                        .sortedBy { it.service.serviceId }
+                        // Only hide a subchannel when both programmes confirm a simulcast.
+                        .filter { entry ->
+                            val current = entry.current
+                            val primaryCurrent = primary.current
+                            current == null || primaryCurrent == null || !current.isSameBroadcastAs(primaryCurrent)
+                        }.sortedBy { it.service.serviceId }
                         .toList()
             }
         return visibleEntries.map { listOf(it).toServiceGroup() }.sortedWith(
@@ -288,7 +291,7 @@ data class ProgramGuide(
 
 private data class Entry(
     val service: Service,
-    val current: Program,
+    val current: Program?,
     val next: Program?,
 )
 
