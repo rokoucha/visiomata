@@ -36,7 +36,7 @@ jobs:
               "client": [{
                   "client_info": {
                       "mobilesdk_app_id": "1:1234567890:android:0000000000000000000000",
-                      "android_client_info": {"package_name": "net.rokoucha.visiomata"},
+                      "android_client_info": {"package_name": "net.rokoucha.visiomata.debug"},
                   },
                   "api_key": [{"current_key": "AIzaSyCIPlaceholderNotARealFirebaseAPIKey"}],
               }],

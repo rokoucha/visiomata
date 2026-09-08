@@ -39,6 +39,7 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import androidx.savedstate.serialization.SavedStateConfiguration
+import com.google.firebase.appdistribution.FirebaseAppDistribution
 import com.mikepenz.aboutlibraries.Libs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -362,6 +363,7 @@ private fun HandheldVisiomataApp(
                         ) {
                             VersionInfoScreen(
                                 versionInfo = versionInfo,
+                                onSendFeedback = appDistributionFeedbackAction(),
                                 onBack =
                                     if (showsTwoPanes) {
                                         null
@@ -514,6 +516,7 @@ private fun TvVisiomataApp(
                             },
                             libraries = libraries,
                             versionInfo = versionInfo,
+                            onSendFeedback = appDistributionFeedbackAction(),
                             onBack = { backStack.popLastIfNotRoot() },
                         )
                     }
@@ -545,6 +548,13 @@ private fun TvVisiomataApp(
                 }
             },
     )
+}
+
+private fun appDistributionFeedbackAction(): (() -> Unit)? {
+    if (!BuildConfig.APP_DISTRIBUTION_FEEDBACK_ENABLED) return null
+    return {
+        FirebaseAppDistribution.getInstance().startFeedback(R.string.app_distribution_feedback_notice)
+    }
 }
 
 @Composable

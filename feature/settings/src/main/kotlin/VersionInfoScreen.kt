@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,6 +33,7 @@ data class AppVersionInfo(
 fun VersionInfoScreen(
     versionInfo: AppVersionInfo,
     onBack: (() -> Unit)?,
+    onSendFeedback: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -51,6 +53,7 @@ fun VersionInfoScreen(
     ) { contentPadding ->
         VersionInfoContent(
             versionInfo = versionInfo,
+            onSendFeedback = onSendFeedback,
             modifier = Modifier.padding(contentPadding),
         )
     }
@@ -59,6 +62,7 @@ fun VersionInfoScreen(
 @Composable
 fun VersionInfoContent(
     versionInfo: AppVersionInfo,
+    onSendFeedback: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -84,5 +88,11 @@ fun VersionInfoContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodyMedium,
         )
+        if (onSendFeedback != null) {
+            Spacer(Modifier.size(24.dp))
+            Button(onClick = onSendFeedback) {
+                Text("フィードバックを送信")
+            }
+        }
     }
 }

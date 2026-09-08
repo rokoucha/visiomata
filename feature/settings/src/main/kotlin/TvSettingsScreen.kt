@@ -68,6 +68,7 @@ fun TvSettingsScreen(
     onRefreshGuide: () -> Unit = {},
     libraries: List<LibraryLicenseUiModel> = emptyList(),
     versionInfo: AppVersionInfo = AppVersionInfo("Visiomata", "1.0", 1),
+    onSendFeedback: (() -> Unit)? = null,
     onBack: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -201,6 +202,7 @@ fun TvSettingsScreen(
                     onFocused = { onCategoryFocused(TvSettingsCategory.VersionInfo) },
                 ) {
                     showCategory(TvSettingsCategory.VersionInfo)
+                    if (onSendFeedback != null) enterDetail()
                 }
                 TvCategoryItem(
                     "オープンソースライセンス",
@@ -303,7 +305,12 @@ fun TvSettingsScreen(
                         }
 
                         TvSettingsCategory.VersionInfo -> {
-                            TvVersionInfo(versionInfo)
+                            TvVersionInfo(
+                                versionInfo = versionInfo,
+                                onSendFeedback = onSendFeedback,
+                                firstFocusRequester = detailFocusRequester,
+                                categoryFocusRequester = versionInfoCategoryFocusRequester,
+                            )
                         }
 
                         TvSettingsCategory.Licenses -> {
@@ -317,7 +324,12 @@ fun TvSettingsScreen(
 }
 
 @Composable
-private fun TvVersionInfo(versionInfo: AppVersionInfo) {
+private fun TvVersionInfo(
+    versionInfo: AppVersionInfo,
+    onSendFeedback: (() -> Unit)?,
+    firstFocusRequester: FocusRequester,
+    categoryFocusRequester: FocusRequester,
+) {
     Column(
         Modifier.fillMaxWidth().padding(vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -338,6 +350,22 @@ private fun TvVersionInfo(versionInfo: AppVersionInfo) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodyMedium,
         )
+        if (onSendFeedback != null) {
+            Spacer(Modifier.height(24.dp))
+            Surface(
+                onClick = onSendFeedback,
+                modifier =
+                    Modifier
+                        .focusRequester(firstFocusRequester)
+                        .returnFocusTo(categoryFocusRequester),
+                colors = tvClickableSurfaceColors(),
+            ) {
+                Text(
+                    "フィードバックを送信",
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                )
+            }
+        }
     }
 }
 

@@ -15,6 +15,7 @@ composeRules = "0.6.6"
 coroutines = "1.11.0"
 detekt = "2.0.0-alpha.6"
 firebaseBom = "34.18.0"
+firebaseAppDistribution = "16.0.0-beta20"
 hilt = "2.60.1"
 junit = "4.13.2"
 kotlin = "2.4.20"
@@ -66,6 +67,8 @@ androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "a
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 androidx-tv-material = { module = "androidx.tv:tv-material", version.ref = "tvMaterial" }
 firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
+firebase-appdistribution = { module = "com.google.firebase:firebase-appdistribution", version.ref = "firebaseAppDistribution" }
+firebase-appdistribution-api = { module = "com.google.firebase:firebase-appdistribution-api", version.ref = "firebaseAppDistribution" }
 firebase-crashlytics-ndk = { module = "com.google.firebase:firebase-crashlytics-ndk" }
 hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
 hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }

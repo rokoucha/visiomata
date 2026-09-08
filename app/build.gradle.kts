@@ -21,6 +21,7 @@ android {
                 require(it in 1..2100000000) { "versionCode must be between 1 and 2100000000" }
             }
         versionName = "1.0"
+        buildConfigField("boolean", "APP_DISTRIBUTION_FEEDBACK_ENABLED", "false")
     }
     signingConfigs {
         val releaseStoreFile = providers.environmentVariable("RELEASE_STORE_FILE")
@@ -34,6 +35,10 @@ android {
         }
     }
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            resValue("string", "app_name", "Visiomata Dev")
+        }
         release {
             signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = true
@@ -54,13 +59,23 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
         }
+        create("appDistribution") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".beta"
+            buildConfigField("boolean", "APP_DISTRIBUTION_FEEDBACK_ENABLED", "true")
+            resValue("string", "app_name", "Visiomata Beta")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures {
+        buildConfig = true
         compose = true
+        resValues = true
     }
 }
 
@@ -95,7 +110,9 @@ dependencies {
     ksp(libs.hilt.compiler)
     implementation(libs.kotlinx.serialization.core)
     implementation(libs.aboutlibraries.core)
+    implementation(libs.firebase.appdistribution.api)
     implementation(libs.firebase.crashlytics.ndk)
+    add("appDistributionImplementation", libs.firebase.appdistribution)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

@@ -1,3 +1,4 @@
 <resources>
+    <string name="app_distribution_feedback_notice">送信内容には、現在の画面のスクリーンショットとアプリ・端末の情報が含まれます。</string>
     <string name="app_name">Visiomata</string>
 </resources>
