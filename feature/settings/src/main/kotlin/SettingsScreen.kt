@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -32,7 +33,14 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,6 +58,31 @@ data class MirakurunConnectionUiState(
     val message: String = "接続先が設定されていません",
     val serverInfo: String? = null,
 )
+
+internal data class MirakurunConnectionDraft(
+    val url: String,
+    val authenticationType: AuthenticationType,
+    val username: String,
+    val password: String,
+    val bearerToken: String,
+) {
+    constructor(settings: MirakurunSettings) : this(
+        settings.url,
+        settings.authenticationType,
+        settings.username,
+        settings.password,
+        settings.bearerToken,
+    )
+
+    fun applyTo(settings: MirakurunSettings): MirakurunSettings =
+        settings.copy(
+            url = url,
+            authenticationType = authenticationType,
+            username = username,
+            password = password,
+            bearerToken = bearerToken,
+        )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -436,11 +469,30 @@ fun MirakurunSettingsScreen(
     onBack: (() -> Unit)?,
     connectionState: MirakurunConnectionUiState = MirakurunConnectionUiState(),
     isRefreshingGuide: Boolean = false,
-    onCheckConnection: () -> Unit = {},
-    onRefreshGuide: () -> Unit = {},
+    onCheckConnection: (MirakurunSettings) -> Unit = {},
+    onRefreshGuide: (MirakurunSettings) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val isUrlInvalid = settings.url.isNotBlank() && !settings.url.isHttpUrl()
+    var draft by remember { mutableStateOf(MirakurunConnectionDraft(settings)) }
+    var savedDraft by remember { mutableStateOf(draft) }
+    var urlWasFocused by remember { mutableStateOf(false) }
+    var usernameWasFocused by remember { mutableStateOf(false) }
+    var passwordWasFocused by remember { mutableStateOf(false) }
+    var bearerTokenWasFocused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val currentSettings = { draft.applyTo(settings) }
+    val save = {
+        if (draft != savedDraft) {
+            savedDraft = draft
+            onSettingsChange(currentSettings())
+        }
+    }
+    val done =
+        KeyboardActions(onDone = {
+            save()
+            focusManager.clearFocus()
+        })
+    val isUrlInvalid = draft.url.isNotBlank() && !draft.url.isHttpUrl()
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -471,8 +523,8 @@ fun MirakurunSettingsScreen(
             )
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
-                value = settings.url,
-                onValueChange = { onSettingsChange(settings.copy(url = it)) },
+                value = draft.url,
+                onValueChange = { draft = draft.copy(url = it) },
                 label = { Text("URL") },
                 placeholder = { Text("http://192.168.1.10:40772") },
                 supportingText = {
@@ -480,8 +532,16 @@ fun MirakurunSettingsScreen(
                 },
                 isError = isUrlInvalid,
                 singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions =
+                    KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                keyboardActions = done,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged {
+                            if (urlWasFocused && !it.isFocused) save()
+                            urlWasFocused = it.isFocused
+                        },
             )
 
             Spacer(Modifier.height(32.dp))
@@ -495,50 +555,69 @@ fun MirakurunSettingsScreen(
                 AuthenticationType.entries.forEachIndexed { index, type ->
                     AuthenticationRow(
                         type = type,
-                        selected = settings.authenticationType == type,
+                        selected = draft.authenticationType == type,
                         index = index,
                         count = AuthenticationType.entries.size,
-                        onClick = { onSettingsChange(settings.copy(authenticationType = type)) },
+                        onClick = {
+                            draft = draft.copy(authenticationType = type)
+                            save()
+                        },
                     )
                 }
             }
 
-            when (settings.authenticationType) {
-                AuthenticationType.None -> {
-                    Unit
-                }
+            when (draft.authenticationType) {
+                AuthenticationType.None -> {}
 
                 AuthenticationType.Basic -> {
                     Spacer(Modifier.height(16.dp))
                     OutlinedTextField(
-                        value = settings.username,
-                        onValueChange = { onSettingsChange(settings.copy(username = it)) },
+                        value = draft.username,
+                        onValueChange = { draft = draft.copy(username = it) },
                         label = { Text("ユーザー名") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = done,
+                        modifier =
+                            Modifier.fillMaxWidth().onFocusChanged {
+                                if (usernameWasFocused && !it.isFocused) save()
+                                usernameWasFocused = it.isFocused
+                            },
                     )
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
-                        value = settings.password,
-                        onValueChange = { onSettingsChange(settings.copy(password = it)) },
+                        value = draft.password,
+                        onValueChange = { draft = draft.copy(password = it) },
                         label = { Text("パスワード") },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions =
+                            KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        keyboardActions = done,
+                        modifier =
+                            Modifier.fillMaxWidth().onFocusChanged {
+                                if (passwordWasFocused && !it.isFocused) save()
+                                passwordWasFocused = it.isFocused
+                            },
                     )
                 }
 
                 AuthenticationType.Bearer -> {
                     Spacer(Modifier.height(16.dp))
                     OutlinedTextField(
-                        value = settings.bearerToken,
-                        onValueChange = { onSettingsChange(settings.copy(bearerToken = it)) },
+                        value = draft.bearerToken,
+                        onValueChange = { draft = draft.copy(bearerToken = it) },
                         label = { Text("Bearerトークン") },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions =
+                            KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        keyboardActions = done,
+                        modifier =
+                            Modifier.fillMaxWidth().onFocusChanged {
+                                if (bearerTokenWasFocused && !it.isFocused) save()
+                                bearerTokenWasFocused = it.isFocused
+                            },
                     )
                 }
             }
@@ -563,9 +642,14 @@ fun MirakurunSettingsScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Button(
-                    onClick = onCheckConnection,
+                    onClick = {
+                        val value = currentSettings()
+                        save()
+                        onCheckConnection(value)
+                    },
                     enabled =
-                        settings.url.isNotBlank() &&
+                        draft.url.isNotBlank() &&
+                            !isUrlInvalid &&
                             connectionState.status != MirakurunConnectionStatus.Checking,
                 ) {
                     if (connectionState.status == MirakurunConnectionStatus.Checking) {
@@ -579,8 +663,12 @@ fun MirakurunSettingsScreen(
                     Text("接続を確認")
                 }
                 Button(
-                    onClick = onRefreshGuide,
-                    enabled = settings.url.isNotBlank() && !isRefreshingGuide,
+                    onClick = {
+                        val value = currentSettings()
+                        save()
+                        onRefreshGuide(value)
+                    },
+                    enabled = draft.url.isNotBlank() && !isUrlInvalid && !isRefreshingGuide,
                 ) {
                     if (isRefreshingGuide) {
                         CircularProgressIndicator(
@@ -632,7 +720,7 @@ private fun AuthenticationRow(
     )
 }
 
-private fun String.isHttpUrl(): Boolean {
+internal fun String.isHttpUrl(): Boolean {
     val value = trim()
     return value.startsWith("http://", ignoreCase = true) ||
         value.startsWith("https://", ignoreCase = true)

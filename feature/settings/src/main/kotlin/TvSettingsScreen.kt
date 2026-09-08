@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
@@ -36,7 +37,9 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Devices
@@ -62,10 +65,11 @@ private fun Modifier.returnFocusTo(requester: FocusRequester): Modifier = focusP
 fun TvSettingsScreen(
     settings: MirakurunSettings,
     onSettingsChange: (MirakurunSettings) -> Unit,
+    onConnectionSettingsChange: (MirakurunSettings) -> Unit = onSettingsChange,
     connectionState: MirakurunConnectionUiState = MirakurunConnectionUiState(),
     isRefreshingGuide: Boolean = false,
-    onCheckConnection: () -> Unit = {},
-    onRefreshGuide: () -> Unit = {},
+    onCheckConnection: (MirakurunSettings) -> Unit = {},
+    onRefreshGuide: (MirakurunSettings) -> Unit = {},
     libraries: List<LibraryLicenseUiModel> = emptyList(),
     versionInfo: AppVersionInfo = AppVersionInfo("Visiomata", "1.0", 1),
     onSendFeedback: (() -> Unit)? = null,
@@ -276,7 +280,7 @@ fun TvSettingsScreen(
                         TvSettingsCategory.Mirakurun -> {
                             TvMirakurunSettings(
                                 settings,
-                                onSettingsChange,
+                                onConnectionSettingsChange,
                                 connectionState,
                                 isRefreshingGuide,
                                 onCheckConnection,
@@ -642,27 +646,57 @@ private fun TvMirakurunSettings(
     update: (MirakurunSettings) -> Unit,
     connectionState: MirakurunConnectionUiState,
     isRefreshingGuide: Boolean,
-    onCheckConnection: () -> Unit,
-    onRefreshGuide: () -> Unit,
+    onCheckConnection: (MirakurunSettings) -> Unit,
+    onRefreshGuide: (MirakurunSettings) -> Unit,
     firstFocusRequester: FocusRequester,
     categoryFocusRequester: FocusRequester,
 ) {
+    var draft by remember { mutableStateOf(MirakurunConnectionDraft(settings)) }
+    var savedDraft by remember { mutableStateOf(draft) }
+    var urlWasFocused by remember { mutableStateOf(false) }
+    var usernameWasFocused by remember { mutableStateOf(false) }
+    var passwordWasFocused by remember { mutableStateOf(false) }
+    var bearerTokenWasFocused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val currentSettings = { draft.applyTo(settings) }
+    val save = {
+        if (draft != savedDraft) {
+            savedDraft = draft
+            update(currentSettings())
+        }
+    }
+    val done =
+        KeyboardActions(onDone = {
+            save()
+            focusManager.clearFocus()
+        })
+    val isUrlInvalid = draft.url.isNotBlank() && !draft.url.isHttpUrl()
     CategoryLabel("接続先")
     Spacer(Modifier.height(12.dp))
     MaterialTextFieldTheme {
         OutlinedTextField(
-            settings.url,
-            { update(settings.copy(url = it)) },
+            draft.url,
+            { draft = draft.copy(url = it) },
             label = { androidx.compose.material3.Text("URL") },
             placeholder = { androidx.compose.material3.Text("http://192.168.1.10:40772") },
-            supportingText = { androidx.compose.material3.Text("決定ボタンでソフトウェアキーボードを開きます") },
+            supportingText = {
+                androidx.compose.material3.Text(
+                    if (isUrlInvalid) "http:// または https:// で始まるURLを入力してください" else "決定ボタンでソフトウェアキーボードを開きます",
+                )
+            },
+            isError = isUrlInvalid,
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            keyboardOptions =
+                KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+            keyboardActions = done,
             modifier =
                 Modifier
                     .fillMaxWidth()
                     .focusRequester(firstFocusRequester)
-                    .returnFocusTo(categoryFocusRequester),
+                    .onFocusChanged {
+                        if (urlWasFocused && !it.isFocused) save()
+                        urlWasFocused = it.isFocused
+                    }.returnFocusTo(categoryFocusRequester),
         )
     }
     Spacer(Modifier.height(32.dp))
@@ -671,8 +705,11 @@ private fun TvMirakurunSettings(
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         AuthenticationType.entries.forEach { type ->
             Surface(
-                selected = settings.authenticationType == type,
-                onClick = { update(settings.copy(authenticationType = type)) },
+                selected = draft.authenticationType == type,
+                onClick = {
+                    draft = draft.copy(authenticationType = type)
+                    save()
+                },
                 modifier = Modifier.weight(1f).returnFocusTo(categoryFocusRequester),
                 colors = tvSelectableSurfaceColors(),
             ) {
@@ -688,42 +725,64 @@ private fun TvMirakurunSettings(
         }
     }
     MaterialTextFieldTheme {
-        when (settings.authenticationType) {
-            AuthenticationType.None -> {
-                Unit
-            }
+        when (draft.authenticationType) {
+            AuthenticationType.None -> {}
 
             AuthenticationType.Basic -> {
                 Spacer(Modifier.height(24.dp))
                 OutlinedTextField(
-                    settings.username,
-                    { update(settings.copy(username = it)) },
+                    draft.username,
+                    { draft = draft.copy(username = it) },
                     label = { androidx.compose.material3.Text("ユーザー名") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth().returnFocusTo(categoryFocusRequester),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = done,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged {
+                                if (usernameWasFocused && !it.isFocused) save()
+                                usernameWasFocused = it.isFocused
+                            }.returnFocusTo(categoryFocusRequester),
                 )
                 Spacer(Modifier.height(16.dp))
                 OutlinedTextField(
-                    settings.password,
-                    { update(settings.copy(password = it)) },
+                    draft.password,
+                    { draft = draft.copy(password = it) },
                     label = { androidx.compose.material3.Text("パスワード") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth().returnFocusTo(categoryFocusRequester),
+                    keyboardOptions =
+                        KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = done,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged {
+                                if (passwordWasFocused && !it.isFocused) save()
+                                passwordWasFocused = it.isFocused
+                            }.returnFocusTo(categoryFocusRequester),
                 )
             }
 
             AuthenticationType.Bearer -> {
                 Spacer(Modifier.height(24.dp))
                 OutlinedTextField(
-                    settings.bearerToken,
-                    { update(settings.copy(bearerToken = it)) },
+                    draft.bearerToken,
+                    { draft = draft.copy(bearerToken = it) },
                     label = { androidx.compose.material3.Text("Bearerトークン") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth().returnFocusTo(categoryFocusRequester),
+                    keyboardOptions =
+                        KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = done,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged {
+                                if (bearerTokenWasFocused && !it.isFocused) save()
+                                bearerTokenWasFocused = it.isFocused
+                            }.returnFocusTo(categoryFocusRequester),
                 )
             }
         }
@@ -744,9 +803,14 @@ private fun TvMirakurunSettings(
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Surface(
             enabled =
-                settings.url.isNotBlank() &&
+                draft.url.isNotBlank() &&
+                    !isUrlInvalid &&
                     connectionState.status != MirakurunConnectionStatus.Checking,
-            onClick = onCheckConnection,
+            onClick = {
+                val value = currentSettings()
+                save()
+                onCheckConnection(value)
+            },
             modifier = Modifier.weight(1f).returnFocusTo(categoryFocusRequester),
             colors = tvClickableSurfaceColors(),
         ) {
@@ -756,8 +820,12 @@ private fun TvMirakurunSettings(
             )
         }
         Surface(
-            enabled = settings.url.isNotBlank() && !isRefreshingGuide,
-            onClick = onRefreshGuide,
+            enabled = draft.url.isNotBlank() && !isUrlInvalid && !isRefreshingGuide,
+            onClick = {
+                val value = currentSettings()
+                save()
+                onRefreshGuide(value)
+            },
             modifier = Modifier.weight(1f).returnFocusTo(categoryFocusRequester),
             colors = tvClickableSurfaceColors(),
         ) {

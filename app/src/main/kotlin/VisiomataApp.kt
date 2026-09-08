@@ -54,6 +54,8 @@ import net.rokoucha.visiomata.guide.GuideTimeline
 import net.rokoucha.visiomata.guide.ProgramGuideScreen
 import net.rokoucha.visiomata.home.HandheldHomeScreen
 import net.rokoucha.visiomata.home.TvHomeScreen
+import net.rokoucha.visiomata.mahiron.infrastructure.ClientException
+import net.rokoucha.visiomata.mahiron.infrastructure.ServerException
 import net.rokoucha.visiomata.mirakurun.MirakurunConnectionUseCase
 import net.rokoucha.visiomata.mirakurun.PlaybackSessionUseCase
 import net.rokoucha.visiomata.mirakurun.ServerKind
@@ -82,12 +84,17 @@ import net.rokoucha.visiomata.settings.VideoPlayerSettingsScreen
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
 import net.rokoucha.visiomata.settings.data.MirakurunSettingsUseCases
 import net.rokoucha.visiomata.theme.VisiomataTheme
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import javax.net.ssl.SSLException
 
 private sealed interface HomeUiState {
     data object Loading : HomeUiState
@@ -207,10 +214,9 @@ private fun HandheldVisiomataApp(
     val versionInfo = rememberAppVersionInfo()
     val maintenance =
         remember(guideUseCases, connectionUseCase) {
-            MirakurunMaintenanceState(guideUseCases, connectionUseCase)
+            MirakurunMaintenanceState(guideUseCases, connectionUseCase, settings)
         }
     val maintenanceScope = rememberCoroutineScope()
-    MirakurunMaintenanceEffect(settings, maintenance)
     GuideEventSync(settings, guideUseCases, maintenance.eventReconnectGeneration)
     var selectedServiceId by rememberSaveable { mutableLongStateOf(TEST_SERVICE_ID) }
     val currentRoute = backStack.lastOrNull()
@@ -418,15 +424,18 @@ private fun HandheldVisiomataApp(
                         ) {
                             MirakurunSettingsScreen(
                                 settings = settings,
-                                onSettingsChange = settingsUseCases::update,
+                                onSettingsChange = {
+                                    settingsUseCases.update(it)
+                                    maintenance.markNeedsCheck(it)
+                                },
                                 connectionState = maintenance.connectionState,
                                 isRefreshingGuide = maintenance.isRefreshingGuide,
-                                onCheckConnection = {
-                                    maintenanceScope.launch { maintenance.checkConnection(settings) }
+                                onCheckConnection = { value ->
+                                    maintenanceScope.launch { maintenance.checkConnection(value) }
                                 },
-                                onRefreshGuide = {
+                                onRefreshGuide = { value ->
                                     maintenanceScope.launch {
-                                        val message = maintenance.refreshGuide(settings) ?: return@launch
+                                        val message = maintenance.refreshGuide(value) ?: return@launch
                                         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                                     }
                                 },
@@ -472,10 +481,9 @@ private fun TvVisiomataApp(
     val versionInfo = rememberAppVersionInfo()
     val maintenance =
         remember(guideUseCases, connectionUseCase) {
-            MirakurunMaintenanceState(guideUseCases, connectionUseCase)
+            MirakurunMaintenanceState(guideUseCases, connectionUseCase, settings)
         }
     val maintenanceScope = rememberCoroutineScope()
-    MirakurunMaintenanceEffect(settings, maintenance)
     GuideEventSync(settings, guideUseCases, maintenance.eventReconnectGeneration)
     var selectedServiceId by rememberSaveable { mutableLongStateOf(TEST_SERVICE_ID) }
     NavDisplay(
@@ -503,14 +511,18 @@ private fun TvVisiomataApp(
                         TvSettingsScreen(
                             settings = settings,
                             onSettingsChange = settingsUseCases::update,
+                            onConnectionSettingsChange = {
+                                settingsUseCases.update(it)
+                                maintenance.markNeedsCheck(it)
+                            },
                             connectionState = maintenance.connectionState,
                             isRefreshingGuide = maintenance.isRefreshingGuide,
-                            onCheckConnection = {
-                                maintenanceScope.launch { maintenance.checkConnection(settings) }
+                            onCheckConnection = { value ->
+                                maintenanceScope.launch { maintenance.checkConnection(value) }
                             },
-                            onRefreshGuide = {
+                            onRefreshGuide = { value ->
                                 maintenanceScope.launch {
-                                    val message = maintenance.refreshGuide(settings) ?: return@launch
+                                    val message = maintenance.refreshGuide(value) ?: return@launch
                                     Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                                 }
                             },
@@ -610,33 +622,13 @@ private fun rememberLibraryLicenses(): List<LibraryLicenseUiModel> {
     }
 }
 
-@Composable
-private fun MirakurunMaintenanceEffect(
-    settings: MirakurunSettings,
-    state: MirakurunMaintenanceState,
-) {
-    LaunchedEffect(
-        state,
-        settings.url,
-        settings.authenticationType,
-        settings.username,
-        settings.password,
-        settings.bearerToken,
-    ) {
-        if (settings.url.isBlank()) {
-            state.markNotConfigured()
-        } else {
-            state.checkConnection(settings)
-        }
-    }
-}
-
 @Stable
 private class MirakurunMaintenanceState(
     private val guideUseCases: ProgramGuideUseCases,
     private val connectionUseCase: MirakurunConnectionUseCase,
+    initialSettings: MirakurunSettings,
 ) {
-    var connectionState by mutableStateOf(MirakurunConnectionUiState())
+    var connectionState by mutableStateOf(initialConnectionState(initialSettings))
         private set
     var isRefreshingGuide by mutableStateOf(false)
         private set
@@ -645,6 +637,10 @@ private class MirakurunMaintenanceState(
 
     fun markNotConfigured() {
         connectionState = MirakurunConnectionUiState()
+    }
+
+    fun markNeedsCheck(settings: MirakurunSettings) {
+        connectionState = initialConnectionState(settings)
     }
 
     suspend fun checkConnection(settings: MirakurunSettings) {
@@ -670,7 +666,7 @@ private class MirakurunMaintenanceState(
                 Log.e(APP_LOG_TAG, "Mirakurun connection check failed", error)
                 MirakurunConnectionUiState(
                     MirakurunConnectionStatus.Error,
-                    error.message ?: "接続できませんでした",
+                    connectionErrorMessage(error),
                 )
             }
     }
@@ -704,6 +700,56 @@ private class MirakurunMaintenanceState(
         }
     }
 }
+
+private fun initialConnectionState(settings: MirakurunSettings): MirakurunConnectionUiState =
+    if (settings.url.isBlank()) {
+        MirakurunConnectionUiState()
+    } else {
+        MirakurunConnectionUiState(message = "接続を確認してください")
+    }
+
+internal fun connectionErrorMessage(error: Exception): String =
+    when (error) {
+        is IllegalArgumentException -> {
+            "URLが正しくありません。http:// または https:// から入力してください"
+        }
+
+        is ClientException -> {
+            when (error.statusCode) {
+                401, 403 -> "認証に失敗しました。認証方式と認証情報を確認してください"
+                404 -> "Mirakurun APIが見つかりません。接続先URLを確認してください"
+                else -> "サーバーに接続を拒否されました（HTTP ${error.statusCode}）"
+            }
+        }
+
+        is ServerException -> {
+            "サーバーでエラーが発生しました（HTTP ${error.statusCode}）"
+        }
+
+        is UnknownHostException -> {
+            "サーバーが見つかりません。ホスト名やネットワークを確認してください"
+        }
+
+        is ConnectException -> {
+            "サーバーに接続できません。URLとサーバーの起動状態を確認してください"
+        }
+
+        is SocketTimeoutException -> {
+            "接続がタイムアウトしました。ネットワークとサーバーの状態を確認してください"
+        }
+
+        is SSLException -> {
+            "安全な接続を確立できません。HTTPSの証明書を確認してください"
+        }
+
+        is IOException -> {
+            "通信に失敗しました。ネットワーク接続を確認してください"
+        }
+
+        else -> {
+            "Mirakurunから正しい応答を受け取れませんでした"
+        }
+    }
 
 @Composable
 private fun GuideEventSync(
