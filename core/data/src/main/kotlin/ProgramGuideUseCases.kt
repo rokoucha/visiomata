@@ -134,13 +134,6 @@ class ProgramGuideUseCases(
     suspend fun refreshAll(settings: MirakurunSettings) = repository.refresh(settings, force = true)
 
     suspend fun syncEvents(settings: MirakurunSettings) {
-        try {
-            repository.refreshServices(settings)
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (_: Exception) {
-            // The event stream can reconnect even if the initial refresh fails.
-        }
         repository.syncEvents(settings)
     }
 

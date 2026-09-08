@@ -30,6 +30,7 @@ androidComponents {
 kotlin { jvmToolchain(17) }
 
 dependencies {
+    implementation(project(":core:network"))
     implementation(project(":core:settings-data"))
     api(libs.okhttp)
     implementation(libs.kotlinx.coroutines.core)

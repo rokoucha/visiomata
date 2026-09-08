@@ -626,7 +626,6 @@ private fun MirakurunMaintenanceEffect(
         if (settings.url.isBlank()) {
             state.markNotConfigured()
         } else {
-            delay(750)
             state.checkConnection(settings)
         }
     }

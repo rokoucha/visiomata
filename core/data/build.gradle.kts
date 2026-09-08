@@ -20,6 +20,7 @@ room { schemaDirectory("$projectDir/schemas") }
 
 dependencies {
     api(project(":core:model"))
+    implementation(project(":core:network"))
     implementation(project(":core:settings-data"))
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)

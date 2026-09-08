@@ -1,7 +1,6 @@
 package net.rokoucha.visiomata.data
 
 import android.content.Context
-import android.util.Base64
 import com.squareup.moshi.JsonAdapter
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
@@ -23,7 +22,9 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.job
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import net.rokoucha.visiomata.model.ChannelType
 import net.rokoucha.visiomata.model.Program
@@ -33,9 +34,9 @@ import net.rokoucha.visiomata.model.ProgramGuide
 import net.rokoucha.visiomata.model.ProgramGuideAvailability
 import net.rokoucha.visiomata.model.RelatedProgram
 import net.rokoucha.visiomata.model.Service
+import net.rokoucha.visiomata.network.ServerHttpClients
 import net.rokoucha.visiomata.settings.data.AuthenticationType
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.time.Instant
@@ -101,6 +102,7 @@ class ProgramGuideRepository(
             observe(settings),
             flow {
                 emit(ServiceRefreshResult(isRefreshing = true))
+                delay(AUTO_REFRESH_DELAY_MILLIS)
                 val error =
                     try {
                         refresh()
@@ -145,14 +147,17 @@ class ProgramGuideRepository(
                 val source = settings.cacheKey
                 val services = dao.services(source, channelType.value)
                 val remote = RemoteGuideSource(settings)
+                val requests = Semaphore(PROGRAM_REQUEST_CONCURRENCY)
                 // Network latency dominates this path on TV. Fetch independent services in
-                // parallel, then write bounded batches to Room to avoid serial request stalls.
+                // bounded parallel batches, then write bounded batches to Room.
                 val fetched =
                     coroutineScope {
                         services
                             .map { service ->
                                 async {
-                                    service to remote.programs(service.networkId, service.serviceId)
+                                    requests.withPermit {
+                                        service to remote.programs(service.networkId, service.serviceId)
+                                    }
                                 }
                             }.awaitAll()
                     }
@@ -225,25 +230,28 @@ class ProgramGuideRepository(
 
             val services = dao.services(source, channelType.value)
             val remote = RemoteGuideSource(settings)
+            val requests = Semaphore(PROGRAM_REQUEST_CONCURRENCY)
             val updates =
                 coroutineScope {
                     services
                         .map { service ->
                             async {
-                                val programmes =
-                                    remote
-                                        .programs(service.networkId, service.serviceId)
-                                        .asSequence()
-                                        .filter { it.startAt + it.duration > now }
-                                        .sortedBy { it.startAt }
-                                        .take(HOME_PROGRAMS_PER_SERVICE)
-                                        .map { it.toEntity(source, service.transportStreamId) }
-                                        .toList()
-                                ServiceProgramUpdate(
-                                    service.networkId,
-                                    service.serviceId,
-                                    programmes,
-                                )
+                                requests.withPermit {
+                                    val programmes =
+                                        remote
+                                            .programs(service.networkId, service.serviceId)
+                                            .asSequence()
+                                            .filter { it.startAt + it.duration > now }
+                                            .sortedBy { it.startAt }
+                                            .take(HOME_PROGRAMS_PER_SERVICE)
+                                            .map { it.toEntity(source, service.transportStreamId) }
+                                            .toList()
+                                    ServiceProgramUpdate(
+                                        service.networkId,
+                                        service.serviceId,
+                                        programmes,
+                                    )
+                                }
                             }
                         }.awaitAll()
                 }
@@ -448,37 +456,12 @@ private class RemoteGuideSource(
             .trimEnd('/')
             .let { if (it.endsWith("/api")) it else "$it/api" }
     private val client =
-        OkHttpClient
-            .Builder()
-            .addInterceptor { chain ->
-                val request =
-                    chain
-                        .request()
-                        .newBuilder()
-                        .apply {
-                            when (settings.authenticationType) {
-                                AuthenticationType.Basic -> {
-                                    header(
-                                        "Authorization",
-                                        "Basic " +
-                                            Base64.encodeToString(
-                                                "${settings.username}:${settings.password}".toByteArray(),
-                                                Base64.NO_WRAP,
-                                            ),
-                                    )
-                                }
-
-                                AuthenticationType.Bearer -> {
-                                    header("Authorization", "Bearer ${settings.bearerToken}")
-                                }
-
-                                AuthenticationType.None -> {
-                                    Unit
-                                }
-                            }
-                        }.build()
-                chain.proceed(request)
-            }.build()
+        ServerHttpClients.get(
+            apiRoot = apiRoot,
+            username = settings.username.takeIf { settings.authenticationType == AuthenticationType.Basic },
+            password = settings.password.takeIf { settings.authenticationType == AuthenticationType.Basic },
+            bearerToken = settings.bearerToken.takeIf { settings.authenticationType == AuthenticationType.Bearer },
+        )
     private val moshi = Moshi.Builder().add(KotlinJsonAdapterFactory()).build()
     private val servicesAdapter = listAdapter<ServiceDto>()
     private val eventsAdapter = listAdapter<GuideEventDto>()
@@ -764,6 +747,8 @@ private val selectableServiceTypes = setOf(0x01, 0xA1, 0xA5, 0xAD)
 private const val PROGRAM_BATCH_SIZE = 500
 private const val HOME_PROGRAMS_PER_SERVICE = 2
 private const val HOME_QUERY_REFRESH_MILLIS = 60_000L
+private const val AUTO_REFRESH_DELAY_MILLIS = 1_500L
+private const val PROGRAM_REQUEST_CONCURRENCY = 4
 private const val CACHE_MAX_AGE_MILLIS = 15 * 60 * 1000L
 private const val EVENT_RETRY_INITIAL_MILLIS = 1_000L
 private const val EVENT_RETRY_MAX_MILLIS = 60_000L

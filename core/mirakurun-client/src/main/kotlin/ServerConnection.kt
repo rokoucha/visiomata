@@ -12,9 +12,8 @@ import net.rokoucha.visiomata.mirakurun.api.StatusApi
 import net.rokoucha.visiomata.mirakurun.api.StreamApi
 import net.rokoucha.visiomata.mirakurun.api.TunersApi
 import net.rokoucha.visiomata.mirakurun.api.VersionApi
+import net.rokoucha.visiomata.network.ServerHttpClients
 import okhttp3.Call
-import okhttp3.OkHttpClient
-import java.util.Base64
 import net.rokoucha.visiomata.mahiron.api.DocumentsApi as MahironDocumentsApi
 import net.rokoucha.visiomata.mahiron.api.ServicesApi as MahironServicesApi
 import net.rokoucha.visiomata.mahiron.api.VersionApi as MahironVersionApi
@@ -65,7 +64,7 @@ object MirakurunConnector {
         callFactory: Call.Factory? = null,
     ): ServerConnection {
         val apiBaseUrl = normalizeApiBaseUrl(baseUrl)
-        val client = callFactory ?: createHttpClient(username, password, bearerToken)
+        val client = callFactory ?: createHttpClient(apiBaseUrl, username, password, bearerToken)
         val common = MirakurunApi(apiBaseUrl, client)
         // Mahiron's Version schema is a strict superset of Mirakurun's and retains
         // the optional discriminator while still accepting a Mirakurun response.
@@ -85,37 +84,9 @@ object MirakurunConnector {
     }
 
     private fun createHttpClient(
+        apiRoot: String,
         username: String?,
         password: String?,
         bearerToken: String?,
-    ): OkHttpClient =
-        OkHttpClient
-            .Builder()
-            .apply {
-                if (!bearerToken.isNullOrEmpty()) {
-                    addInterceptor { chain ->
-                        chain.proceed(
-                            chain
-                                .request()
-                                .newBuilder()
-                                .header("Authorization", "Bearer $bearerToken")
-                                .build(),
-                        )
-                    }
-                } else if (!username.isNullOrEmpty()) {
-                    val token =
-                        Base64
-                            .getEncoder()
-                            .encodeToString("$username:${password.orEmpty()}".toByteArray())
-                    addInterceptor { chain ->
-                        chain.proceed(
-                            chain
-                                .request()
-                                .newBuilder()
-                                .header("Authorization", "Basic $token")
-                                .build(),
-                        )
-                    }
-                }
-            }.build()
+    ): Call.Factory = ServerHttpClients.get(apiRoot, username, password, bearerToken)
 }

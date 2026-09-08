@@ -4,9 +4,9 @@ import android.os.Process
 import android.os.Trace
 import android.util.Base64
 import android.util.Log
+import net.rokoucha.visiomata.network.ServerHttpClients
 import okhttp3.Call
 import okhttp3.Callback
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONArray
@@ -49,22 +49,13 @@ internal class MahironBmlMessageSource(
     }
 
     private val root = apiRoot.trimEnd('/').let { if (it.endsWith("/api")) it else "$it/api" }
-    private val authorization =
-        when {
-            bearerToken.isNotEmpty() -> {
-                "Bearer $bearerToken"
-            }
-
-            basicAuthUsername.isNotEmpty() -> {
-                val value = "$basicAuthUsername:$basicAuthPassword".toByteArray(Charsets.UTF_8)
-                "Basic ${Base64.encodeToString(value, Base64.NO_WRAP)}"
-            }
-
-            else -> {
-                null
-            }
-        }
-    private val client = OkHttpClient()
+    private val client =
+        ServerHttpClients.get(
+            apiRoot = root,
+            username = basicAuthUsername,
+            password = basicAuthPassword,
+            bearerToken = bearerToken,
+        )
     private val moduleExecutor =
         ThreadPoolExecutor(
             1,
@@ -500,9 +491,7 @@ internal class MahironBmlMessageSource(
         Request
             .Builder()
             .url("$root/$path")
-            .apply {
-                authorization?.let { header("Authorization", it) }
-            }.build()
+            .build()
 
     private fun addCall(call: Call) = synchronized(calls) { calls.add(call) }
 
