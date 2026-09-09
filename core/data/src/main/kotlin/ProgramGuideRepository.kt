@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -72,15 +73,17 @@ class ProgramGuideRepository(
     }
 
     /**
-     * Emits the Room snapshot immediately while refreshing the service catalogue in parallel.
-     * Consumers therefore share the same cache-first startup behavior and loading semantics.
+     * Refreshes the full home snapshot (service catalogue plus every service's current
+     * and next programmes) before first display so the home screen never renders a
+     * partially loaded service list. Starts immediately because home consumers keep
+     * showing their loading indicator until this first refresh completes.
      */
     fun observeWithServiceRefresh(
         settings: MirakurunSettings,
         force: Boolean = false,
     ): Flow<ProgramGuideLoadState> =
-        observeWithRefresh(settings) {
-            refreshServices(settings, force)
+        observeWithRefresh(settings, startDelayMillis = 0) {
+            refreshHomeSnapshot(settings, force)
         }
 
     fun observeServiceWithRefresh(
@@ -96,13 +99,14 @@ class ProgramGuideRepository(
 
     private fun observeWithRefresh(
         settings: MirakurunSettings,
+        startDelayMillis: Long = AUTO_REFRESH_DELAY_MILLIS,
         refresh: suspend () -> Unit,
     ): Flow<ProgramGuideLoadState> =
         combine(
             observe(settings),
             flow {
                 emit(ServiceRefreshResult(isRefreshing = true))
-                delay(AUTO_REFRESH_DELAY_MILLIS)
+                delay(startDelayMillis)
                 val error =
                     try {
                         refresh()
@@ -207,6 +211,75 @@ class ProgramGuideRepository(
                     it.channel != null && it.type in selectableServiceTypes
                 }
             dao.replaceServices(source, services.map { it.toEntity(source) }, System.currentTimeMillis())
+        }
+    }
+
+    /**
+     * Refreshes the service catalogue and every service's home programmes (current plus
+     * next) in a single snapshot. Fetching `/programs` once streams the same bytes as
+     * one request per service but without per-request round trips, so a cold start with
+     * dozens of services completes in roughly two requests. The catalogue and the
+     * programmes are written in one transaction, so home observers only ever see the
+     * complete set.
+     */
+    suspend fun refreshHomeSnapshot(
+        settings: MirakurunSettings,
+        force: Boolean = false,
+    ) = refreshMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val source = settings.cacheKey
+            val now = System.currentTimeMillis()
+            if (!force) {
+                val cachedAt = dao.cache(source)?.refreshedAt
+                if (cachedAt != null && now - cachedAt < CACHE_MAX_AGE_MILLIS) {
+                    val channelTypes = dao.serviceChannelTypes(source)
+                    if (channelTypes.isNotEmpty() &&
+                        channelTypes.all { dao.futureProgramCount(source, it, now) > 0 }
+                    ) {
+                        channelTypes.forEach { channelTypeRefreshedAt.putIfAbsent(source to it, now) }
+                        return@withContext
+                    }
+                }
+            }
+
+            val remote = RemoteGuideSource(settings)
+            val homePrograms = mutableMapOf<Pair<Int, Int>, MutableList<ProgramDto>>()
+            val services =
+                coroutineScope {
+                    val servicesDeferred = async { remote.services() }
+                    launch {
+                        remote.forEachProgramBatch { programs ->
+                            programs.forEach { program ->
+                                if (program.startAt + program.duration > now) {
+                                    homePrograms
+                                        .getOrPut(program.networkId to program.serviceId) { mutableListOf() }
+                                        .add(program)
+                                }
+                            }
+                        }
+                    }
+                    servicesDeferred.await().filter {
+                        it.channel != null && it.type in selectableServiceTypes
+                    }
+                }
+            val transportStreams =
+                services.associate { (it.networkId to it.serviceId) to it.transportStreamId }
+            val selected = selectHomePrograms(homePrograms, now)
+            val updates =
+                services.map { service ->
+                    ServiceProgramUpdate(
+                        service.networkId,
+                        service.serviceId,
+                        selected[service.networkId to service.serviceId]
+                            .orEmpty()
+                            .map { it.toEntity(source, transportStreams[it.networkId to it.serviceId]) },
+                    )
+                }
+            val refreshedAt = System.currentTimeMillis()
+            dao.replaceHomeSnapshot(source, services.map { it.toEntity(source) }, updates, refreshedAt)
+            services.mapNotNullTo(hashSetOf()) { it.channel?.type }.forEach { channelType ->
+                channelTypeRefreshedAt[source to channelType] = refreshedAt
+            }
         }
     }
 
@@ -708,6 +781,24 @@ private fun ProgramEntity.toModel() =
                 .orEmpty()
                 .mapNotNull(ProgramAudioDto::toModel),
     )
+
+/**
+ * Keeps each service's home programmes: still airing or upcoming, oldest first, up to
+ * [HOME_PROGRAMS_PER_SERVICE] entries covering the current and next programmes.
+ */
+internal fun selectHomePrograms(
+    programsByService: Map<Pair<Int, Int>, List<ProgramDto>>,
+    now: Long,
+): Map<Pair<Int, Int>, List<ProgramDto>> =
+    programsByService
+        .mapValues { (_, programs) ->
+            programs
+                .asSequence()
+                .filter { it.startAt + it.duration > now }
+                .sortedBy { it.startAt }
+                .take(HOME_PROGRAMS_PER_SERVICE)
+                .toList()
+        }.filterValues { it.isNotEmpty() }
 
 private fun ProgramAudioDto.toModel(): ProgramAudio? =
     ProgramAudio(

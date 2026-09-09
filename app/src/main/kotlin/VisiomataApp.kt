@@ -986,14 +986,13 @@ private class HomeState(
     private var selectedType: ChannelType? = null
     private val requestedTvTypes = mutableSetOf<ChannelType>()
 
+    private var latestGuide: net.rokoucha.visiomata.model.ProgramGuide? = null
+    private var initialSnapshotDone = false
+    private var initialSnapshotError: Throwable? = null
+
     fun updateGuide(guide: net.rokoucha.visiomata.model.ProgramGuide) {
-        if (guide.services.isEmpty()) return
-        val types =
-            guide.services.map { it.channelType }.distinct().sortedWith(
-                compareBy<ChannelType>({ it.displayOrder }, { it.value }),
-            )
-        val next = HomeUiState.Ready(guide.serviceGroups(), types)
-        if (uiState != next) uiState = next
+        latestGuide = guide
+        publishIfSnapshotDone()
     }
 
     suspend fun loadTvTypes(types: List<ChannelType>) {
@@ -1023,14 +1022,41 @@ private class HomeState(
         isRefreshing: Boolean,
         error: Throwable?,
     ) {
-        if (isRefreshing || uiState != HomeUiState.Loading) return
-        uiState =
-            if (error == null) {
-                HomeUiState.Ready(emptyList(), emptyList())
-            } else {
-                Log.e(APP_LOG_TAG, "Home refresh failed", error)
-                HomeUiState.Error(error.message ?: "番組情報を取得できませんでした")
-            }
+        if (isRefreshing) return
+        if (!initialSnapshotDone) {
+            initialSnapshotDone = true
+            initialSnapshotError = error
+        }
+        error?.let { Log.e(APP_LOG_TAG, "Home refresh failed", it) }
+        publishIfSnapshotDone()
+    }
+
+    /**
+     * Publishes the home list only after the initial snapshot refresh completes, so the
+     * first paint always shows the complete service catalogue with programmes instead of
+     * a partially loaded list. A failed refresh still falls back to the cached catalogue
+     * when one exists; the error surface only replaces an empty home.
+     */
+    private fun publishIfSnapshotDone() {
+        if (!initialSnapshotDone) return
+        val guide = latestGuide ?: return
+        if (guide.services.isEmpty()) {
+            val error = initialSnapshotError
+            val next =
+                if (error == null) {
+                    HomeUiState.Ready(emptyList(), emptyList())
+                } else {
+                    HomeUiState.Error(error.message ?: "番組情報を取得できませんでした")
+                }
+            if (uiState != next) uiState = next
+            return
+        }
+        val types =
+            guide.services.map { it.channelType }.distinct().sortedWith(
+                compareBy<ChannelType>({ it.displayOrder }, { it.value }),
+            )
+        val next = HomeUiState.Ready(guide.serviceGroups(), types)
+        if (uiState != next) uiState = next
     }
 
     suspend fun selectType(type: ChannelType) {

@@ -140,6 +140,9 @@ internal interface GuideDao {
         channelType: String,
     ): List<ServiceEntity>
 
+    @Query("SELECT DISTINCT channelType FROM services WHERE source = :source")
+    suspend fun serviceChannelTypes(source: String): List<String>
+
     @Query(
         "SELECT COUNT(*) FROM programs INNER JOIN services ON programs.source = services.source AND programs.networkId = services.networkId AND programs.serviceId = services.serviceId WHERE programs.source = :source AND services.channelType = :channelType AND programs.startAt + programs.duration > :now",
     )
@@ -254,6 +257,26 @@ internal interface GuideDao {
         deleteServices(source)
         insertServices(services)
         upsertCache(GuideCacheEntity(source, refreshedAt, cache(source)?.lastEventAt))
+    }
+
+    /**
+     * Replaces the service catalogue and every service's home programmes in one
+     * transaction so observers never see a partially refreshed home snapshot.
+     */
+    @Transaction
+    suspend fun replaceHomeSnapshot(
+        source: String,
+        services: List<ServiceEntity>,
+        updates: List<ServiceProgramUpdate>,
+        refreshedAt: Long,
+    ) {
+        deleteServices(source)
+        insertServices(services)
+        upsertCache(GuideCacheEntity(source, refreshedAt, cache(source)?.lastEventAt))
+        updates.forEach { update ->
+            deleteProgramsForService(source, update.networkId, update.serviceId)
+            insertPrograms(update.programs)
+        }
     }
 
     @Query("UPDATE services SET source = :target, cacheId = :target || ':' || id WHERE source = :staging")
