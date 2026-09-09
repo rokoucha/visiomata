@@ -18,6 +18,8 @@ internal class TsStreamRelay(
 ) {
     private val generationCounter = AtomicLong()
     val generation: Long get() = generationCounter.get()
+    private val bytesPublished = AtomicLong()
+    val totalBytesPublished: Long get() = bytesPublished.get()
     private var streamGeneration = 0L
 
     private val audioMonitor = TsAudioPmtMonitor { onAudioPidsAdded(streamGeneration) }
@@ -31,6 +33,7 @@ internal class TsStreamRelay(
         offset: Int,
         length: Int,
     ) {
+        if (length > 0) bytesPublished.addAndGet(length.toLong())
         try {
             scanTransportStream(source, offset, length)
         } catch (error: Exception) {

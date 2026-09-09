@@ -15,14 +15,28 @@ internal data class PlaybackMemoryPolicy(
     val bmlQueueCapacity: Int,
 ) {
     companion object {
+        /**
+         * Live headroom for the unbounded, non-timeshifted MPEG-TS stream.
+         *
+         * Buffering far ahead of a live tuner only pushes playback further behind live and turns
+         * the loader into burst-idle cycles whose idle gaps the server must absorb while nobody
+         * reads. A few seconds rides out Wi-Fi jitter, so every device shares the same live
+         * window and the memory tiers below only tune the BML caps.
+         */
+        const val LIVE_MIN_BUFFER_MS = 2_500
+        const val LIVE_MAX_BUFFER_MS = 8_000
+
         fun from(context: Context): PlaybackMemoryPolicy {
             val activityManager = context.getSystemService(ActivityManager::class.java)
-            val lowRam = activityManager?.isLowRamDevice == true
-            return if (lowRam) {
+            return forDevice(activityManager?.isLowRamDevice == true)
+        }
+
+        fun forDevice(isLowRamDevice: Boolean): PlaybackMemoryPolicy =
+            if (isLowRamDevice) {
                 PlaybackMemoryPolicy(
                     isLowRamDevice = true,
-                    minBufferMs = 2_500,
-                    maxBufferMs = 8_000,
+                    minBufferMs = LIVE_MIN_BUFFER_MS,
+                    maxBufferMs = LIVE_MAX_BUFFER_MS,
                     targetBufferBytes = 8 * 1024 * 1024,
                     bmlMaxModuleBytes = 4L * 1024 * 1024,
                     bmlMaxCarouselBytes = 8L * 1024 * 1024,
@@ -31,15 +45,14 @@ internal data class PlaybackMemoryPolicy(
             } else {
                 PlaybackMemoryPolicy(
                     isLowRamDevice = false,
-                    minBufferMs = 50_000,
-                    maxBufferMs = 50_000,
+                    minBufferMs = LIVE_MIN_BUFFER_MS,
+                    maxBufferMs = LIVE_MAX_BUFFER_MS,
                     targetBufferBytes = -1,
                     bmlMaxModuleBytes = 16L * 1024 * 1024,
                     bmlMaxCarouselBytes = 32L * 1024 * 1024,
                     bmlQueueCapacity = 128,
                 )
             }
-        }
     }
 }
 

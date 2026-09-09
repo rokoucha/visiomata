@@ -5,9 +5,11 @@ package net.rokoucha.visiomata.playback
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -33,6 +35,7 @@ import net.rokoucha.visiomata.playback.media3.TsStreamRelay
 import net.rokoucha.visiomata.playback.media3.VisiomataSubtitleParserFactory
 import net.rokoucha.visiomata.playback.mpeg2toh264.DeinterlaceMetadataQueue
 import net.rokoucha.visiomata.playback.mpeg2toh264.LinearDeinterlaceEffect
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
@@ -88,6 +91,47 @@ internal class VisiomataPlaybackEngine(
             retryScheduled = false
             if (streaming && !released.get()) reconnectInternal()
         }
+    private var lastStatsBytes = 0L
+    private var lastStatsTimeMs = 0L
+
+    // Sustained reads below the broadcast bitrate mean the server has to hold the backlog, so
+    // report the loader's actual intake (not the line speed) together with the buffer depth that
+    // pins playback behind live. Compare the Mbps here against the stream bitrate to tell a slow
+    // line apart from the app falling behind.
+    private val logStats =
+        Runnable {
+            if (!streaming || released.get()) return@Runnable
+            val nowMs = SystemClock.elapsedRealtime()
+            val bytes = tsStreamRelay.totalBytesPublished
+            val deltaBytes = bytes - lastStatsBytes
+            val deltaMs = nowMs - lastStatsTimeMs
+            lastStatsBytes = bytes
+            lastStatsTimeMs = nowMs
+            if (deltaMs > 0) {
+                val mbps = deltaBytes * 8_000.0 / deltaMs / 1_000_000.0
+                val bufferedMs =
+                    player.totalBufferedDuration.let { buffered ->
+                        if (buffered == C.TIME_UNSET) -1 else buffered
+                    }
+                Log.i(
+                    "VisiomataPlayer",
+                    String.format(
+                        Locale.US,
+                        "Stream stats: %.1f MB total, %.1f Mbps, buffered %dms, state %s",
+                        bytes / 1_000_000.0,
+                        mbps,
+                        bufferedMs,
+                        playbackStateName(player.playbackState),
+                    ),
+                )
+            }
+            scheduleStats()
+        }
+
+    private fun scheduleStats() {
+        retryHandler.removeCallbacks(logStats)
+        if (streaming && !released.get()) retryHandler.postDelayed(logStats, STATS_INTERVAL_MS)
+    }
 
     private val recoveryListener =
         object : Player.Listener {
@@ -116,6 +160,7 @@ internal class VisiomataPlaybackEngine(
     fun start(onBeforeReconnect: () -> Unit = {}): Boolean {
         if (released.get() || streaming) return false
         streaming = true
+        startStats()
         createMediaSession()
         val reconnect =
             player.playbackState == Player.STATE_IDLE ||
@@ -141,6 +186,7 @@ internal class VisiomataPlaybackEngine(
         if (!streaming || released.get()) return
         streaming = false
         retryHandler.removeCallbacks(retryPlayback)
+        retryHandler.removeCallbacks(logStats)
         retryScheduled = false
         bmlMessageSource?.stop()
         player.stop()
@@ -163,6 +209,7 @@ internal class VisiomataPlaybackEngine(
         if (!released.compareAndSet(false, true)) return
         streaming = false
         retryHandler.removeCallbacks(retryPlayback)
+        retryHandler.removeCallbacks(logStats)
         retryScheduled = false
         releaseMediaSession()
         player.removeListener(recoveryListener)
@@ -203,6 +250,12 @@ internal class VisiomataPlaybackEngine(
             reconnectInternal()
             player.playWhenReady = playWhenReady
         }
+    }
+
+    private fun startStats() {
+        lastStatsBytes = tsStreamRelay.totalBytesPublished
+        lastStatsTimeMs = SystemClock.elapsedRealtime()
+        scheduleStats()
     }
 
     private fun scheduleRetry(error: PlaybackException? = null) {
@@ -365,6 +418,17 @@ private fun createBmlMessageSource(config: VisiomataPlaybackEngineConfig): BmlMe
                 ),
             )
         }
+    }
+
+private const val STATS_INTERVAL_MS = 30_000L
+
+private fun playbackStateName(state: Int): String =
+    when (state) {
+        Player.STATE_IDLE -> "idle"
+        Player.STATE_BUFFERING -> "buffering"
+        Player.STATE_READY -> "ready"
+        Player.STATE_ENDED -> "ended"
+        else -> "unknown"
     }
 
 private fun authorizationHeader(config: VisiomataPlaybackEngineConfig): String? =
