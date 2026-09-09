@@ -172,9 +172,26 @@ fun PlayerScreen(
         errorMessage = null
         reloadGeneration += 1
     }
+    val pipView = LocalView.current
+    val pipActivity = remember(pipView) { pipView.context.findActivity() }
+    val pipSupported = remember(pipActivity, isTv) { !isTv && supportsPictureInPicture(pipActivity) }
+    var isPlaying by remember(url) { mutableStateOf(false) }
+    val isInPictureInPictureMode = rememberIsInPictureInPictureMode(pipActivity)
+    PictureInPictureAutoEnterEffect(
+        activity = pipActivity,
+        enabled = pipSupported && isPlaying,
+        hintView = pipView,
+    )
     Box(modifier) {
         PlayerLayout(
             portrait = portrait,
+            isInPictureInPictureMode = isInPictureInPictureMode,
+            onEnterPictureInPicture =
+                if (pipSupported) {
+                    { pipActivity?.let { enterPictureInPicture(it, pipView) } }
+                } else {
+                    null
+                },
             programInfo = programInfo,
             overlayTimeout = overlayTimeout,
             controls = controls,
@@ -228,6 +245,7 @@ fun PlayerScreen(
                         bmlUsedKeyGroups = groups
                     },
                     onPlaybackErrorChanged = { errorMessage = it },
+                    onIsPlayingChanged = { isPlaying = it },
                     onAudioTracksChanged = { tracks ->
                         audioTracks = tracks
                         tracks.firstOrNull(AudioTrackOption::selected)?.let {
@@ -305,15 +323,25 @@ private fun PlayerLayout(
     controls: @Composable () -> Unit,
     onRemoteKey: (String) -> Unit,
     onBack: () -> Unit,
+    onReload: () -> Unit,
     modifier: Modifier = Modifier,
     tvInputMode: TvInputMode = TvInputMode.Player,
     onTvInputModeChanged: (TvInputMode) -> Unit = {},
     errorMessage: String? = null,
-    onReload: () -> Unit,
+    isInPictureInPictureMode: Boolean = false,
+    onEnterPictureInPicture: (() -> Unit)? = null,
 ) {
     val currentOnTvInputModeChanged by rememberUpdatedState(onTvInputModeChanged)
     val currentPlayer by rememberUpdatedState(player)
     val movablePlayer = remember { movableContentOf { currentPlayer() } }
+    val pipSwipeModifier = rememberPictureInPictureSwipeModifier(onEnterPictureInPicture)
+    if (isInPictureInPictureMode) {
+        // PiPウィンドウには映像のみを表示し、操作UIや番組情報は隠す。
+        Box(modifier.fillMaxSize().background(Color.Black)) {
+            movablePlayer()
+        }
+        return
+    }
     if (portrait) {
         var selectedTab by rememberSaveable { mutableIntStateOf(0) }
         var overlayVisible by remember { mutableStateOf(true) }
@@ -332,10 +360,13 @@ private fun PlayerLayout(
             Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)) {
                 movablePlayer()
                 Box(
-                    Modifier.matchParentSize().clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { toggleOverlay() },
+                    Modifier
+                        .matchParentSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { toggleOverlay() }
+                        .then(pipSwipeModifier),
                 )
                 errorMessage?.let { message ->
                     PlayerErrorOverlay(message, Modifier.matchParentSize().zIndex(1f))
@@ -369,6 +400,9 @@ private fun PlayerLayout(
                                 PlayerReloadButton {
                                     interactionGeneration++
                                     onReload()
+                                }
+                                onEnterPictureInPicture?.let { enterPip ->
+                                    PlayerPipButton(onClick = enterPip)
                                 }
                                 Spacer(Modifier.weight(1f))
                                 AudioTrackMenu(
@@ -712,6 +746,7 @@ private fun PlayerLayout(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                     ) { toggleOverlay() }
+                    .then(pipSwipeModifier)
                     .focusRequester(playerFocusRequester)
                     .focusable(),
             )
@@ -766,6 +801,9 @@ private fun PlayerLayout(
                                 },
                                 modifier = Modifier.focusRequester(reloadButtonFocusRequester),
                             )
+                            onEnterPictureInPicture?.let { enterPip ->
+                                PlayerPipButton(onClick = enterPip)
+                            }
                             if (dataBroadcastingEnabled && !remoteVisible && !isTv) {
                                 var remoteButtonFocused by remember { mutableStateOf(false) }
                                 FilledTonalIconButton(
@@ -1408,6 +1446,41 @@ private fun PlayerReloadButton(
         Icon(
             imageVector = Icons.Default.Refresh,
             contentDescription = "再読み込み",
+        )
+    }
+}
+
+@Composable
+private fun PlayerPipButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    FilledTonalIconButton(
+        onClick = onClick,
+        modifier =
+            modifier
+                .onFocusChanged { focused = it.isFocused }
+                .then(
+                    if (focused) {
+                        Modifier.border(
+                            3.dp,
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.shapes.extraLarge,
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
+        colors =
+            IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.picture_in_picture_24),
+            contentDescription = "ピクチャ イン ピクチャで表示",
         )
     }
 }

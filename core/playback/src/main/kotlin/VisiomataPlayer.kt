@@ -176,6 +176,7 @@ fun VisiomataPlayer(
     ) -> Unit = { _, _, _ -> },
     onPlaybackErrorChanged: (String?) -> Unit = {},
     onAudioTracksChanged: (List<AudioTrackOption>) -> Unit = {},
+    onIsPlayingChanged: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -183,6 +184,7 @@ fun VisiomataPlayer(
     val currentOnAudioTracksChanged by rememberUpdatedState(onAudioTracksChanged)
     val currentOnBmlInputStateChanged by rememberUpdatedState(onBmlInputStateChanged)
     val currentOnPlaybackErrorChanged by rememberUpdatedState(onPlaybackErrorChanged)
+    val currentOnIsPlayingChanged by rememberUpdatedState(onIsPlayingChanged)
     val memoryPolicy = remember(context) { PlaybackMemoryPolicy.from(context) }
     val aribFontFiles =
         remember {
@@ -348,6 +350,10 @@ fun VisiomataPlayer(
                     currentOnAudioTracksChanged(tracks.audioTrackOptions(engine.audioComponentState))
                 }
 
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    currentOnIsPlayingChanged(isPlaying)
+                }
+
                 override fun onPlayerError(error: PlaybackException) {
                     if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
                     resetBmlViewForNewStream()
@@ -405,6 +411,7 @@ fun VisiomataPlayer(
         player.addListener(listener)
         engine.addAudioStateListener(audioStateListener)
         currentOnAudioTracksChanged(player.currentTracks.audioTrackOptions(engine.audioComponentState))
+        currentOnIsPlayingChanged(player.isPlaying)
         if (player.playbackState == Player.STATE_READY) recordReadyMemory()
         lifecycleOwner.lifecycle.addObserver(observer)
         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
