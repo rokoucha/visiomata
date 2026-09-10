@@ -239,6 +239,7 @@ fun PlayerScreen(
                     remoteKeyEvents = remoteKeyEvents,
                     reloadRequest = reloadGeneration,
                     selectedAudioTrackId = selectedAudioTrackId,
+                    isInPictureInPictureMode = isInPictureInPictureMode,
                     onBmlInputStateChanged = { available, contentVisible, groups ->
                         bmlActive = available
                         bmlContentVisible = contentVisible

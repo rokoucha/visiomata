@@ -9,6 +9,7 @@ import android.os.Looper
 import android.os.Trace
 import android.util.Log
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.foundation.background
@@ -79,12 +80,35 @@ private val aribFontAssetPaths =
         "fonts/rounded-mplus-1m-wadalab-comp-arib.ttf",
     )
 
-private data class VideoRectPx(
+internal data class VideoRectPx(
     val left: Int,
     val top: Int,
     val width: Int,
     val height: Int,
 )
+
+/**
+ * BMLが指示する映像面の配置を、現在の表示モードに合わせて有効化する。
+ *
+ * PiPウィンドウは通常画面より大幅に小さいため、フルスクリーン用の絶対座標をそのまま適用すると
+ * 映像が窓の外に押し出されてしまう。PiPではBMLの矩形指示を無視して映像を全画面表示する。
+ */
+internal fun effectiveVideoRect(
+    bmlInvisible: Boolean,
+    videoRect: VideoRectPx?,
+    isInPictureInPictureMode: Boolean,
+): VideoRectPx? =
+    if (
+        bmlInvisible ||
+        isInPictureInPictureMode ||
+        videoRect == null ||
+        videoRect.width <= 0 ||
+        videoRect.height <= 0
+    ) {
+        null
+    } else {
+        videoRect
+    }
 
 private fun updateSubtitleViewport(
     playerView: PlayerView,
@@ -169,6 +193,7 @@ fun VisiomataPlayer(
     remoteKeyEvents: Flow<BmlRemoteKeyEvent>? = null,
     reloadRequest: Int = 0,
     selectedAudioTrackId: String? = null,
+    isInPictureInPictureMode: Boolean = false,
     onBmlInputStateChanged: (
         available: Boolean,
         contentVisible: Boolean,
@@ -538,10 +563,13 @@ fun VisiomataPlayer(
                 update = { host ->
                     val videoHost = host.getChildAt(0) as FrameLayout
                     val playerView = videoHost.getChildAt(videoHost.childCount - 1) as PlayerView
-                    val videoRect = bmlVideoRect
+                    // PiPではBML描画プレーンを隠し、映像面の矩形指示も無視して全画面表示する。
+                    (host.getChildAt(1) as? View)?.visibility =
+                        if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+                    val videoRect = effectiveVideoRect(bmlInvisible, bmlVideoRect, isInPictureInPictureMode)
                     playerView.player = player
                     val desiredLayoutParams =
-                        if (!bmlInvisible && videoRect != null && videoRect.width > 0f && videoRect.height > 0f) {
+                        if (videoRect != null) {
                             FrameLayout
                                 .LayoutParams(
                                     videoRect.width,
