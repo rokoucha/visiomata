@@ -301,20 +301,21 @@ internal class VisiomataPlaybackEngine(
                         subtitleParserFactory,
                     ),
                 )
-        if (config.memoryPolicy.isLowRamDevice) {
-            builder.setLoadControl(
-                DefaultLoadControl
-                    .Builder()
-                    .setBufferDurationsMs(
-                        config.memoryPolicy.minBufferMs,
-                        config.memoryPolicy.maxBufferMs,
-                        1_000,
-                        2_000,
-                    ).setTargetBufferBytes(config.memoryPolicy.targetBufferBytes)
-                    .setPrioritizeTimeOverSizeThresholds(false)
-                    .build(),
-            )
-        }
+        // The live window is shared by every device; only the byte caps differ by tier.
+        // Without this, non-low-RAM devices fall back to ExoPlayer's 50s default buffer and
+        // drift far behind live while holding onto stale media.
+        builder.setLoadControl(
+            DefaultLoadControl
+                .Builder()
+                .setBufferDurationsMs(
+                    config.memoryPolicy.minBufferMs,
+                    config.memoryPolicy.maxBufferMs,
+                    1_000,
+                    2_000,
+                ).setTargetBufferBytes(config.memoryPolicy.targetBufferBytes)
+                .setPrioritizeTimeOverSizeThresholds(false)
+                .build(),
+        )
         return builder.build().apply {
             addAnalyticsListener(
                 object : AnalyticsListener {

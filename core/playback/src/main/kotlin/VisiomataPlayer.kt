@@ -564,8 +564,9 @@ fun VisiomataPlayer(
                     val videoHost = host.getChildAt(0) as FrameLayout
                     val playerView = videoHost.getChildAt(videoHost.childCount - 1) as PlayerView
                     // PiPではBML描画プレーンを隠し、映像面の矩形指示も無視して全画面表示する。
+                    // BML非表示時も合成対象から外し、全画面透過レイヤの毎フレーム合成を省く。
                     (host.getChildAt(1) as? View)?.visibility =
-                        if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+                        if (isInPictureInPictureMode || bmlInvisible) View.GONE else View.VISIBLE
                     val videoRect = effectiveVideoRect(bmlInvisible, bmlVideoRect, isInPictureInPictureMode)
                     playerView.player = player
                     val desiredLayoutParams =
