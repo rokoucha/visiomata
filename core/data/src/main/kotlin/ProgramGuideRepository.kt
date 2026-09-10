@@ -21,7 +21,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.job
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -198,29 +197,42 @@ class ProgramGuideRepository(
         force: Boolean = false,
     ) = refreshMutex.withLock {
         withContext(Dispatchers.IO) {
-            val source = settings.cacheKey
-            val cachedAt = dao.cache(source)?.refreshedAt
-            if (!force && cachedAt != null &&
-                System.currentTimeMillis() - cachedAt < CACHE_MAX_AGE_MILLIS
-            ) {
-                return@withContext
-            }
-
-            val services =
-                RemoteGuideSource(settings).services().filter {
-                    it.channel != null && it.type in selectableServiceTypes
-                }
-            dao.replaceServices(source, services.map { it.toEntity(source) }, System.currentTimeMillis())
+            refreshServicesLocked(settings, force)
         }
     }
 
     /**
-     * Refreshes the service catalogue and every service's home programmes (current plus
-     * next) in a single snapshot. Fetching `/programs` once streams the same bytes as
-     * one request per service but without per-request round trips, so a cold start with
-     * dozens of services completes in roughly two requests. The catalogue and the
-     * programmes are written in one transaction, so home observers only ever see the
-     * complete set.
+     * The service catalogue is a single small request and never touches cached
+     * programmes, so it is safe to re-fetch on every lightweight refresh.
+     */
+    private suspend fun refreshServicesLocked(
+        settings: MirakurunSettings,
+        force: Boolean,
+    ) {
+        val source = settings.cacheKey
+        val cachedAt = dao.cache(source)?.refreshedAt
+        if (!force && cachedAt != null &&
+            System.currentTimeMillis() - cachedAt < CACHE_MAX_AGE_MILLIS
+        ) {
+            return
+        }
+
+        val services =
+            RemoteGuideSource(settings).services().filter {
+                it.channel != null && it.type in selectableServiceTypes
+            }
+        dao.replaceServices(source, services.map { it.toEntity(source) }, System.currentTimeMillis())
+    }
+
+    /**
+     * Ensures the home screen can render the service catalogue with current
+     * programmes.
+     *
+     * A non-forced refresh stays lightweight: only the small service catalogue is
+     * re-fetched, and programme data is backfilled solely for channel types that
+     * have nothing cached. Nothing already cached is deleted, so returning from
+     * the background neither triggers a full programme download nor wipes the
+     * guide cache. A forced refresh (pull to refresh) performs the full fetch.
      */
     suspend fun refreshHomeSnapshot(
         settings: MirakurunSettings,
@@ -229,57 +241,70 @@ class ProgramGuideRepository(
         withContext(Dispatchers.IO) {
             val source = settings.cacheKey
             val now = System.currentTimeMillis()
-            if (!force) {
-                val cachedAt = dao.cache(source)?.refreshedAt
-                if (cachedAt != null && now - cachedAt < CACHE_MAX_AGE_MILLIS) {
-                    val channelTypes = dao.serviceChannelTypes(source)
-                    if (channelTypes.isNotEmpty() &&
-                        channelTypes.all { dao.futureProgramCount(source, it, now) > 0 }
-                    ) {
-                        channelTypes.forEach { channelTypeRefreshedAt.putIfAbsent(source to it, now) }
-                        return@withContext
-                    }
+            if (!force && hasUsableHomeCache(source, now)) {
+                dao.serviceChannelTypes(source).forEach {
+                    channelTypeRefreshedAt.putIfAbsent(source to it, now)
                 }
+                return@withContext
             }
+            if (force) {
+                refreshLocked(settings, force = true)
+                dao.serviceChannelTypes(source).forEach {
+                    channelTypeRefreshedAt[source to it] = System.currentTimeMillis()
+                }
+            } else {
+                refreshHomeSnapshotLight(settings, source, now)
+            }
+        }
+    }
 
-            val remote = RemoteGuideSource(settings)
-            val homePrograms = mutableMapOf<Pair<Int, Int>, MutableList<ProgramDto>>()
-            val services =
-                coroutineScope {
-                    val servicesDeferred = async { remote.services() }
-                    launch {
-                        remote.forEachProgramBatch { programs ->
-                            programs.forEach { program ->
-                                if (program.startAt + program.duration > now) {
-                                    homePrograms
-                                        .getOrPut(program.networkId to program.serviceId) { mutableListOf() }
-                                        .add(program)
-                                }
-                            }
-                        }
-                    }
-                    servicesDeferred.await().filter {
-                        it.channel != null && it.type in selectableServiceTypes
-                    }
-                }
-            val transportStreams =
-                services.associate { (it.networkId to it.serviceId) to it.transportStreamId }
-            val selected = selectHomePrograms(homePrograms, now)
-            val updates =
-                services.map { service ->
-                    ServiceProgramUpdate(
-                        service.networkId,
-                        service.serviceId,
-                        selected[service.networkId to service.serviceId]
-                            .orEmpty()
-                            .map { it.toEntity(source, transportStreams[it.networkId to it.serviceId]) },
-                    )
-                }
-            val refreshedAt = System.currentTimeMillis()
-            dao.replaceHomeSnapshot(source, services.map { it.toEntity(source) }, updates, refreshedAt)
-            services.mapNotNullTo(hashSetOf()) { it.channel?.type }.forEach { channelType ->
-                channelTypeRefreshedAt[source to channelType] = refreshedAt
+    private suspend fun hasUsableHomeCache(
+        source: String,
+        now: Long,
+    ): Boolean {
+        val cachedAt = dao.cache(source)?.refreshedAt
+        if (cachedAt == null || now - cachedAt >= CACHE_MAX_AGE_MILLIS) return false
+        val channelTypes = dao.serviceChannelTypes(source)
+        return channelTypes.isNotEmpty() &&
+            channelTypes.all { dao.futureProgramCount(source, it, now) > 0 }
+    }
+
+    /**
+     * Lightweight home refresh: re-fetches only the service catalogue (one small
+     * request) and backfills programmes solely for channel types with nothing
+     * cached. Cached guide data is never deleted.
+     */
+    private suspend fun refreshHomeSnapshotLight(
+        settings: MirakurunSettings,
+        source: String,
+        now: Long,
+    ) {
+        if (dao.serviceChannelTypes(source).isEmpty()) {
+            // Cold start with no catalogue at all: a single full fetch populates
+            // both home and the guide cache at once in roughly two requests.
+            refreshLocked(settings, force = true)
+            dao.serviceChannelTypes(source).forEach {
+                channelTypeRefreshedAt[source to it] = System.currentTimeMillis()
             }
+            return
+        }
+        refreshServicesLocked(settings, force = true)
+        val missingTypes =
+            dao.serviceChannelTypes(source).filter { dao.futureProgramCount(source, it, now) == 0 }
+        if (missingTypes.isEmpty()) {
+            dao.serviceChannelTypes(source).forEach {
+                channelTypeRefreshedAt.putIfAbsent(source to it, now)
+            }
+            return
+        }
+        fetchAndStoreServicePrograms(
+            settings,
+            source,
+            missingTypes.flatMap { dao.services(source, it) },
+            now,
+        )
+        missingTypes.forEach {
+            channelTypeRefreshedAt[source to it] = System.currentTimeMillis()
         }
     }
 
@@ -301,42 +326,62 @@ class ProgramGuideRepository(
                 return@withContext
             }
 
-            val services = dao.services(source, channelType.value)
-            val remote = RemoteGuideSource(settings)
-            val requests = Semaphore(PROGRAM_REQUEST_CONCURRENCY)
-            val updates =
-                coroutineScope {
-                    services
-                        .map { service ->
-                            async {
-                                requests.withPermit {
-                                    val programmes =
-                                        remote
-                                            .programs(service.networkId, service.serviceId)
-                                            .asSequence()
-                                            .filter { it.startAt + it.duration > now }
-                                            .sortedBy { it.startAt }
-                                            .take(HOME_PROGRAMS_PER_SERVICE)
-                                            .map { it.toEntity(source, service.transportStreamId) }
-                                            .toList()
-                                    ServiceProgramUpdate(
-                                        service.networkId,
-                                        service.serviceId,
-                                        programmes,
-                                    )
-                                }
-                            }
-                        }.awaitAll()
-                }
-            dao.replaceProgramsForServices(source, updates)
+            fetchAndStoreServicePrograms(settings, source, dao.services(source, channelType.value), now)
             channelTypeRefreshedAt[refreshKey] = System.currentTimeMillis()
         }
+    }
+
+    /**
+     * Fetches every given service's schedule and adds all future programmes to
+     * the cache without deleting anything still relevant, so fetched data feeds
+     * both home and the guide.
+     */
+    private suspend fun fetchAndStoreServicePrograms(
+        settings: MirakurunSettings,
+        source: String,
+        services: List<ServiceEntity>,
+        now: Long,
+    ) {
+        if (services.isEmpty()) return
+        val remote = RemoteGuideSource(settings)
+        val requests = Semaphore(PROGRAM_REQUEST_CONCURRENCY)
+        // Network latency dominates this path on TV. Fetch independent services in
+        // bounded parallel batches, then write bounded batches to Room.
+        val entities =
+            coroutineScope {
+                services
+                    .map { service ->
+                        async {
+                            requests.withPermit {
+                                remote
+                                    .programs(service.networkId, service.serviceId)
+                                    .filterFuturePrograms(now)
+                                    .map { it.toEntity(source, service.transportStreamId) }
+                            }
+                        }
+                    }.awaitAll()
+                    .flatten()
+            }
+        dao.storePrograms(source, entities, now - PROGRAM_PRUNE_GRACE_MILLIS)
     }
 
     suspend fun refresh(
         settings: MirakurunSettings,
         force: Boolean = false,
     ) = refreshMutex.withLock {
+        withContext(Dispatchers.IO) {
+            refreshLocked(settings, force)
+        }
+    }
+
+    /**
+     * Full fetch used for a forced refresh: streams every programme once and
+     * swaps the whole source snapshot, so no stale or partial rows survive.
+     */
+    private suspend fun refreshLocked(
+        settings: MirakurunSettings,
+        force: Boolean,
+    ) {
         withContext(Dispatchers.IO) {
             val source = settings.cacheKey
             val cachedAt = dao.cache(source)?.refreshedAt
@@ -783,22 +828,13 @@ private fun ProgramEntity.toModel() =
     )
 
 /**
- * Keeps each service's home programmes: still airing or upcoming, oldest first, up to
- * [HOME_PROGRAMS_PER_SERVICE] entries covering the current and next programmes.
+ * Keeps programmes that are still airing or upcoming. The cache retains every
+ * future programme rather than just what home displays (the home query shows
+ * two per service), so a home refresh never discards guide data fetched for
+ * other windows.
  */
-internal fun selectHomePrograms(
-    programsByService: Map<Pair<Int, Int>, List<ProgramDto>>,
-    now: Long,
-): Map<Pair<Int, Int>, List<ProgramDto>> =
-    programsByService
-        .mapValues { (_, programs) ->
-            programs
-                .asSequence()
-                .filter { it.startAt + it.duration > now }
-                .sortedBy { it.startAt }
-                .take(HOME_PROGRAMS_PER_SERVICE)
-                .toList()
-        }.filterValues { it.isNotEmpty() }
+internal fun List<ProgramDto>.filterFuturePrograms(now: Long): List<ProgramDto> =
+    asSequence().filter { it.startAt + it.duration > now }.toList()
 
 private fun ProgramAudioDto.toModel(): ProgramAudio? =
     ProgramAudio(
@@ -836,8 +872,15 @@ private val MirakurunSettings.cacheKey: String
 
 private val selectableServiceTypes = setOf(0x01, 0xA1, 0xA5, 0xAD)
 private const val PROGRAM_BATCH_SIZE = 500
-private const val HOME_PROGRAMS_PER_SERVICE = 2
 private const val HOME_QUERY_REFRESH_MILLIS = 60_000L
+
+/**
+ * Programmes that ended longer ago than this are never displayed (the guide
+ * window starts one broadcast day before the anchor date) and can no longer be
+ * re-fetched once the server drops them, so expired rows are pruned on every
+ * additive programme write instead of wiping per-service schedules.
+ */
+private const val PROGRAM_PRUNE_GRACE_MILLIS = 7 * 24 * 60 * 60 * 1000L
 private const val AUTO_REFRESH_DELAY_MILLIS = 1_500L
 private const val PROGRAM_REQUEST_CONCURRENCY = 4
 private const val CACHE_MAX_AGE_MILLIS = 15 * 60 * 1000L

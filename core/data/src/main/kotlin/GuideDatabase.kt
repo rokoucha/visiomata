@@ -66,12 +66,6 @@ internal data class GuideCacheEntity(
     val lastEventAt: Long? = null,
 )
 
-internal data class ServiceProgramUpdate(
-    val networkId: Int,
-    val serviceId: Int,
-    val programs: List<ProgramEntity>,
-)
-
 @Dao
 internal interface GuideDao {
     @Query("SELECT * FROM services WHERE source = :source ORDER BY id")
@@ -210,26 +204,26 @@ internal interface GuideDao {
         serviceId: Int,
     )
 
-    @Transaction
-    suspend fun replaceProgramsForService(
+    @Query("DELETE FROM programs WHERE source = :source AND startAt + duration < :threshold")
+    suspend fun deleteExpiredPrograms(
         source: String,
-        networkId: Int,
-        serviceId: Int,
-        programs: List<ProgramEntity>,
-    ) {
-        deleteProgramsForService(source, networkId, serviceId)
-        insertPrograms(programs)
-    }
+        threshold: Long,
+    )
 
+    /**
+     * Adds fetched programmes without touching the programmes already cached for
+     * other windows, so a home or single-type refresh never wipes the guide cache.
+     * Only programmes that ended before [pruneBefore] are removed; anything the
+     * server could still return stays.
+     */
     @Transaction
-    suspend fun replaceProgramsForServices(
+    suspend fun storePrograms(
         source: String,
-        updates: List<ServiceProgramUpdate>,
+        programs: List<ProgramEntity>,
+        pruneBefore: Long,
     ) {
-        updates.forEach { update ->
-            deleteProgramsForService(source, update.networkId, update.serviceId)
-            insertPrograms(update.programs)
-        }
+        if (programs.isNotEmpty()) insertPrograms(programs)
+        deleteExpiredPrograms(source, pruneBefore)
     }
 
     @Query(
@@ -257,26 +251,6 @@ internal interface GuideDao {
         deleteServices(source)
         insertServices(services)
         upsertCache(GuideCacheEntity(source, refreshedAt, cache(source)?.lastEventAt))
-    }
-
-    /**
-     * Replaces the service catalogue and every service's home programmes in one
-     * transaction so observers never see a partially refreshed home snapshot.
-     */
-    @Transaction
-    suspend fun replaceHomeSnapshot(
-        source: String,
-        services: List<ServiceEntity>,
-        updates: List<ServiceProgramUpdate>,
-        refreshedAt: Long,
-    ) {
-        deleteServices(source)
-        insertServices(services)
-        upsertCache(GuideCacheEntity(source, refreshedAt, cache(source)?.lastEventAt))
-        updates.forEach { update ->
-            deleteProgramsForService(source, update.networkId, update.serviceId)
-            insertPrograms(update.programs)
-        }
     }
 
     @Query("UPDATE services SET source = :target, cacheId = :target || ':' || id WHERE source = :staging")
