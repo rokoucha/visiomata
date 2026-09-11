@@ -404,9 +404,14 @@ fun VisiomataPlayer(
                 override fun onPlayerError(error: PlaybackException) {
                     if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
                     resetBmlViewForNewStream()
+                    val detail = error.localizedMessage ?: "再生に失敗しました"
+                    // The engine listener runs first, so a give-up is already recorded here.
                     currentOnPlaybackErrorChanged(
-                        error.localizedMessage?.let { "$it\n再接続します…" }
-                            ?: "再生に失敗しました\n再接続します…",
+                        if (engine.isDecoderRetryGaveUp()) {
+                            "$detail\n自動再接続を中止しました"
+                        } else {
+                            "$detail\n再接続します…"
+                        },
                     )
                 }
 

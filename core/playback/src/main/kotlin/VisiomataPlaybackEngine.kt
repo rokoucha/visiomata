@@ -70,6 +70,7 @@ internal class VisiomataPlaybackEngine(
     private var streaming = false
     private var retryAttempt = 0
     private var retryScheduled = false
+    private val decoderRetryPolicy = DecoderRetryPolicy()
     private var mediaSession: MediaSession? = null
     internal val audioComponentState = AudioComponentState(initialAudioComponents)
 
@@ -143,6 +144,7 @@ internal class VisiomataPlaybackEngine(
                         retryHandler.removeCallbacks(retryPlayback)
                         retryScheduled = false
                         retryAttempt = 0
+                        decoderRetryPolicy.reset()
                     }
 
                     Player.STATE_ENDED -> {
@@ -168,6 +170,8 @@ internal class VisiomataPlaybackEngine(
                 player.playerError != null
         return if (reconnect) {
             onBeforeReconnect()
+            retryAttempt = 0
+            decoderRetryPolicy.reset()
             // Reset while acquisition is still inactive so Mahiron does not briefly open a stale
             // connection immediately before the fresh live connection.
             bmlMessageSource?.reset()
@@ -200,10 +204,14 @@ internal class VisiomataPlaybackEngine(
         retryHandler.removeCallbacks(retryPlayback)
         retryScheduled = false
         retryAttempt = 0
+        decoderRetryPolicy.reset()
         onBeforeReconnect()
         reconnectInternal()
         return true
     }
+
+    /** Whether automatic retry was abandoned after repeated decoder errors. */
+    fun isDecoderRetryGaveUp(): Boolean = decoderRetryPolicy.gaveUp
 
     fun release() {
         if (!released.compareAndSet(false, true)) return
@@ -259,7 +267,21 @@ internal class VisiomataPlaybackEngine(
     }
 
     private fun scheduleRetry(error: PlaybackException? = null) {
-        if (!streaming || released.get() || retryScheduled) return
+        if (!streaming || released.get() || retryScheduled || decoderRetryPolicy.gaveUp) return
+        if (error != null && isDecoderErrorCode(error.errorCode)) {
+            if (decoderRetryPolicy.onDecoderError()) {
+                bmlMessageSource?.stop()
+                Log.w(
+                    "VisiomataPlayer",
+                    "Decoder failed ${DecoderRetryPolicy.MAX_CONSECUTIVE_DECODER_ERRORS} times in a row; " +
+                        "abandoning automatic retry",
+                    error,
+                )
+                return
+            }
+        } else {
+            decoderRetryPolicy.onOtherError()
+        }
         val delayMs = min(1_000L shl retryAttempt.coerceAtMost(4), 10_000L)
         retryAttempt++
         retryScheduled = true
