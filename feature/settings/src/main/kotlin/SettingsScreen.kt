@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import net.rokoucha.visiomata.settings.data.AuthenticationType
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
 import net.rokoucha.visiomata.settings.data.Mpeg2PlaybackMode
+import net.rokoucha.visiomata.settings.data.requiresDeviceMpeg2Decoder
 
 enum class MirakurunConnectionStatus { NotConfigured, Checking, Connected, Error }
 
@@ -244,20 +245,32 @@ fun VideoPlayerSettingsScreen(
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(start = 8.dp, bottom = 8.dp),
             )
+            val mpeg2DecoderPresent = rememberMpeg2DecoderPresent()
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 Mpeg2PlaybackMode.entries.forEachIndexed { index, mode ->
+                    // The direct-playback modes show audio only without a device decoder.
+                    val selectable = !mode.requiresDeviceMpeg2Decoder || mpeg2DecoderPresent != false
                     SegmentedListItem(
                         checked = settings.mpeg2PlaybackMode == mode,
                         onCheckedChange = {
                             onSettingsChange(settings.copy(mpeg2PlaybackMode = mode))
                         },
+                        enabled = selectable,
                         shapes =
                             ListItemDefaults.segmentedShapes(
                                 index = index,
                                 count = Mpeg2PlaybackMode.entries.size,
                             ),
                         content = { Text(mode.title()) },
-                        supportingContent = { Text(mode.description()) },
+                        supportingContent = {
+                            Text(
+                                if (selectable) {
+                                    mode.description()
+                                } else {
+                                    "この端末にはMPEG-2デコーダーが無いため選択できません"
+                                },
+                            )
+                        },
                         leadingContent = {
                             RadioButton(
                                 selected = settings.mpeg2PlaybackMode == mode,
@@ -267,6 +280,14 @@ fun VideoPlayerSettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+            }
+            if (mpeg2DecoderPresent == false && settings.mpeg2PlaybackMode.requiresDeviceMpeg2Decoder) {
+                Text(
+                    "MPEG-2デコーダーの無い端末では映像が表示されず音声のみになります。「自動」に変更してください。",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                )
             }
             Text(
                 text = "デインターレース",

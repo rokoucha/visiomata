@@ -13,6 +13,9 @@ enum class Mpeg2PlaybackMode {
     ForceHardwareDecoder,
 }
 
+val Mpeg2PlaybackMode.requiresDeviceMpeg2Decoder: Boolean
+    get() = this == Mpeg2PlaybackMode.ForceSoftwareDecoder || this == Mpeg2PlaybackMode.ForceHardwareDecoder
+
 data class MirakurunSettings(
     val url: String = "",
     val authenticationType: AuthenticationType = AuthenticationType.None,

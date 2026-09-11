@@ -54,6 +54,7 @@ import androidx.tv.material3.Text
 import net.rokoucha.visiomata.settings.data.AuthenticationType
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
 import net.rokoucha.visiomata.settings.data.Mpeg2PlaybackMode
+import net.rokoucha.visiomata.settings.data.requiresDeviceMpeg2Decoder
 
 private enum class TvSettingsCategory { Mirakurun, VideoPlayer, DataBroadcasting, VersionInfo, Licenses }
 
@@ -530,8 +531,11 @@ private fun TvVideoPlayerSettings(
 ) {
     CategoryLabel("MPEG-2映像の再生方法")
     Spacer(Modifier.height(12.dp))
+    val mpeg2DecoderPresent = rememberMpeg2DecoderPresent()
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Mpeg2PlaybackMode.entries.forEachIndexed { index, mode ->
+            // The direct-playback modes show audio only without a device decoder.
+            val selectable = !mode.requiresDeviceMpeg2Decoder || mpeg2DecoderPresent != false
             Surface(
                 selected = settings.mpeg2PlaybackMode == mode,
                 onClick = { update(settings.copy(mpeg2PlaybackMode = mode)) },
@@ -540,14 +544,24 @@ private fun TvVideoPlayerSettings(
                         .fillMaxWidth()
                         .returnFocusTo(categoryFocusRequester)
                         .then(if (index == 0) Modifier.focusRequester(firstFocusRequester) else Modifier),
+                enabled = selectable,
                 colors = tvSelectableSurfaceColors(),
             ) {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
                     Text(mode.tvTitle(), style = MaterialTheme.typography.titleMedium)
-                    SupportingText(mode.tvDescription())
+                    SupportingText(
+                        if (selectable) {
+                            mode.tvDescription()
+                        } else {
+                            "この端末にはMPEG-2デコーダーが無いため選択できません"
+                        },
+                    )
                 }
             }
         }
+    }
+    if (mpeg2DecoderPresent == false && settings.mpeg2PlaybackMode.requiresDeviceMpeg2Decoder) {
+        SupportingText("MPEG-2デコーダーの無い端末では映像が表示されず音声のみになります。「自動」に変更してください。")
     }
     Spacer(Modifier.height(28.dp))
     CategoryLabel("デインターレース")

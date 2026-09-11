@@ -22,6 +22,8 @@ dependencies {
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     implementation(project(":core:settings-data"))
+    implementation(project(":core:playback"))
+    implementation(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.ui.tooling.preview)
