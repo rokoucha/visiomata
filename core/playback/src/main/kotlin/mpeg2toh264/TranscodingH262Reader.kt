@@ -208,6 +208,15 @@ internal class TranscodingH262Reader(
 
         private var lastFormat: VideoFormat? = null
 
+        // Latest SPS/PPS seen in the Annex-B payloads, and the pair baked into the last
+        // emitted Format. The transcoder emits parameter sets once at the stream head, so
+        // they must be retained here: without csd-0/csd-1 the hardware AVC decoder rejects
+        // the very first queueInputBuffer with C2_CORRUPTED.
+        private var currentSps: ByteArray? = null
+        private var currentPps: ByteArray? = null
+        private var emittedSps: ByteArray? = null
+        private var emittedPps: ByteArray? = null
+
         override fun run() {
             val transcoder = transcoderFactory()
             try {
@@ -221,6 +230,10 @@ internal class TranscodingH262Reader(
                             try {
                                 transcoder.reset()
                                 lastFormat = null
+                                currentSps = null
+                                currentPps = null
+                                emittedSps = null
+                                emittedPps = null
                             } catch (error: Exception) {
                                 workerError.compareAndSet(null, error)
                             } finally {
@@ -305,6 +318,9 @@ internal class TranscodingH262Reader(
                     )
                 val size = input.readSize("access-unit size")
                 require(size <= input.remaining()) { "Truncated H.264 access-unit payload" }
+                val (sps, pps) = extractParameterSets(input, input.position(), size)
+                if (sps != null) currentSps = sps
+                if (pps != null) currentPps = pps
                 updateFormat(format)
                 // Feed the sample straight from the native buffer into the sample queue's own
                 // allocation; the only remaining copy is the unavoidable final store. The
@@ -332,7 +348,9 @@ internal class TranscodingH262Reader(
         }
 
         private fun updateFormat(format: VideoFormat) {
-            if (format == lastFormat) return
+            val sps = currentSps
+            val pps = currentPps
+            if (format == lastFormat && sps contentEquals emittedSps && pps contentEquals emittedPps) return
             require(format.width > 0 && format.height > 0) { "Invalid transcoded video dimensions" }
             val pixelRatio =
                 if (format.pixelAspectWidth > 0 && format.pixelAspectHeight > 0) {
@@ -340,7 +358,7 @@ internal class TranscodingH262Reader(
                 } else {
                     1f
                 }
-            output.format(
+            val builder =
                 Format
                     .Builder()
                     .setId(formatId)
@@ -349,9 +367,14 @@ internal class TranscodingH262Reader(
                     .setWidth(format.width)
                     .setHeight(format.height)
                     .setPixelWidthHeightRatio(pixelRatio)
-                    .build(),
-            )
+            if (sps != null && pps != null) {
+                builder.setInitializationData(listOf(sps, pps))
+                avcCodecString(sps)?.let(builder::setCodecs)
+            }
+            output.format(builder.build())
             lastFormat = format
+            emittedSps = sps
+            emittedPps = pps
         }
 
         private fun ByteBuffer.readSize(label: String): Int {
@@ -392,10 +415,105 @@ internal class TranscodingH262Reader(
         }
     }
 
-    private companion object {
+    internal companion object {
         val shutdownCleaner: Cleaner = Cleaner.create()
         val EMPTY = ByteArray(0)
         const val workerName = "TranscodeH262"
+
+        private const val NAL_TYPE_SPS = 7
+        private const val NAL_TYPE_PPS = 8
+
+        /**
+         * Extracts the latest SPS/PPS NAL units from one Annex-B access-unit payload without
+         * copying the payload itself. Returned units carry a 3-byte start-code prefix, matching
+         * Media3's `H264Reader` csd entries. Either side of the pair is null when absent.
+         */
+        internal fun extractParameterSets(
+            buffer: ByteBuffer,
+            offset: Int,
+            size: Int,
+        ): Pair<ByteArray?, ByteArray?> {
+            var sps: ByteArray? = null
+            var pps: ByteArray? = null
+            val end = offset + size
+            var nalStart = -1
+            var nalHeader = -1
+            var position = offset
+            while (position + 3 <= end) {
+                val startCodeLength =
+                    when {
+                        buffer.get(position) == 0.toByte() &&
+                            buffer.get(position + 1) == 0.toByte() &&
+                            buffer.get(position + 2) == 1.toByte() -> {
+                            3
+                        }
+
+                        position + 4 <= end &&
+                            buffer.get(position) == 0.toByte() &&
+                            buffer.get(position + 1) == 0.toByte() &&
+                            buffer.get(position + 2) == 0.toByte() &&
+                            buffer.get(position + 3) == 1.toByte() -> {
+                            4
+                        }
+
+                        else -> {
+                            position++
+                            continue
+                        }
+                    }
+                if (nalStart >= 0) {
+                    when (buffer.get(nalHeader).toInt() and 0x1F) {
+                        NAL_TYPE_SPS -> sps = startPrefixedNal(buffer, nalHeader, position)
+                        NAL_TYPE_PPS -> pps = startPrefixedNal(buffer, nalHeader, position)
+                    }
+                }
+                nalStart = position
+                nalHeader = position + startCodeLength
+                // Emulation prevention guarantees no accidental start code inside a NAL unit,
+                // so resuming the scan at the header cannot split the unit being opened.
+                position = nalHeader
+            }
+            if (nalStart >= 0 && nalHeader < end) {
+                when (buffer.get(nalHeader).toInt() and 0x1F) {
+                    NAL_TYPE_SPS -> sps = startPrefixedNal(buffer, nalHeader, end)
+                    NAL_TYPE_PPS -> pps = startPrefixedNal(buffer, nalHeader, end)
+                }
+            }
+            return sps to pps
+        }
+
+        private fun startPrefixedNal(
+            buffer: ByteBuffer,
+            header: Int,
+            end: Int,
+        ): ByteArray {
+            val unit = ByteArray(3 + end - header)
+            unit[0] = 0
+            unit[1] = 0
+            unit[2] = 1
+            var index = 3
+            for (position in header until end) {
+                unit[index++] = buffer.get(position)
+            }
+            return unit
+        }
+
+        /**
+         * Builds the `avc1.PPCCLL` codec string from a start-code-prefixed SPS NAL, mirroring
+         * `CodecSpecificDataUtil.buildAvcCodecString`. Null when the unit is too short to hold
+         * the profile/constraint/level bytes.
+         */
+        internal fun avcCodecString(sps: ByteArray): String? {
+            if (sps.size < 7 || sps[0] != 0.toByte() || sps[1] != 0.toByte() || sps[2] != 1.toByte()) return null
+            if (sps[3].toInt() and 0x1F != NAL_TYPE_SPS) return null
+            return buildString {
+                append("avc1.")
+                for (index in 4..6) {
+                    append(((sps[index].toInt() and 0xFF) ushr 4).toString(16).uppercase())
+                    append(((sps[index].toInt() and 0xFF) and 0x0F).toString(16).uppercase())
+                }
+            }
+        }
 
         /**
          * Bounds queued PES payloads so a transcoder that falls behind cannot accumulate

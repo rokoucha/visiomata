@@ -137,6 +137,9 @@ class TranscodingH262ReaderTest {
         /** Set before the worker starts; sizes every emitted unit. */
         var payloadSize = 5
 
+        /** When non-empty, each push consumes the head instead of a zero-filled payload. */
+        val queuedPayloads = Collections.synchronizedList(mutableListOf<ByteArray>())
+
         override fun push(
             data: ByteArray,
             ptsUs: Long,
@@ -148,6 +151,12 @@ class TranscodingH262ReaderTest {
             failure?.let { throw it }
             val index = pushCount.getAndIncrement()
             calls.add("push pts=$ptsUs finish=$finish")
+            val payload =
+                if (queuedPayloads.isNotEmpty()) {
+                    queuedPayloads.removeAt(0)
+                } else {
+                    ByteArray(payloadSize)
+                }
             // Echo the input timestamp so assertions stay deterministic without sharing
             // mutable state between the loader thread (test) and the worker thread.
             return ByteBuffer.wrap(
@@ -156,7 +165,7 @@ class TranscodingH262ReaderTest {
                     flags = if (index == 0) 1 else 0,
                     width = 1_920,
                     height = 1_080,
-                    payload = ByteArray(payloadSize),
+                    payload = payload,
                 ),
             )
         }
@@ -196,6 +205,82 @@ class TranscodingH262ReaderTest {
         assertEquals(MimeTypes.VIDEO_H264, trackOutput.formats.single().sampleMimeType)
         assertEquals(1_920, trackOutput.formats.single().width)
         assertEquals(1_080, trackOutput.formats.single().height)
+    }
+
+    @Test
+    fun setsCsdFromInBandParameterSets() {
+        val trackOutput = RecordingTrackOutput()
+        val transcoder = FakeTranscoder()
+        transcoder.queuedPayloads.add(spsPpsIdrPayload())
+        val reader = TranscodingH262Reader(DeinterlaceMetadataQueue(), transcoderFactory = { transcoder })
+        reader.createTracks(FakeExtractorOutput(trackOutput), TsPayloadReader.TrackIdGenerator(0, 1))
+
+        reader.packetStarted(100_000, 0)
+        reader.consumeBytes(byteArrayOf(1))
+
+        await("one sample") { trackOutput.samples.size == 1 }
+        await("format with csd") {
+            trackOutput.formats.size == 1 &&
+                trackOutput.formats
+                    .single()
+                    .initializationData
+                    .isNotEmpty()
+        }
+        val format = trackOutput.formats.single()
+        assertEquals(MimeTypes.VIDEO_H264, format.sampleMimeType)
+        assertEquals(2, format.initializationData.size)
+        assertTrue(
+            format.initializationData[0].contentEquals(
+                byteArrayOf(0, 0, 1, 0x67, 0x64, 0x00, 0x33, 0xAC.toByte(), 0xD9.toByte(), 0x40),
+            ),
+        )
+        assertTrue(
+            format.initializationData[1].contentEquals(
+                byteArrayOf(0, 0, 1, 0x68, 0xE9.toByte(), 0x7B, 0xCB.toByte()),
+            ),
+        )
+        assertEquals("avc1.640033", format.codecs)
+    }
+
+    @Test
+    fun reemitsFormatWhenParameterSetsArriveAfterFirstSample() {
+        val trackOutput = RecordingTrackOutput()
+        val transcoder = FakeTranscoder()
+        // The transcoder emits SPS/PPS once at the stream head; a sample without them must not
+        // block later samples, and the delayed pair must update the already-emitted Format.
+        transcoder.queuedPayloads.add(ByteArray(5))
+        transcoder.queuedPayloads.add(spsPpsIdrPayload())
+        val reader = TranscodingH262Reader(DeinterlaceMetadataQueue(), transcoderFactory = { transcoder })
+        reader.createTracks(FakeExtractorOutput(trackOutput), TsPayloadReader.TrackIdGenerator(0, 1))
+
+        reader.packetStarted(100_000, 0)
+        reader.consumeBytes(byteArrayOf(1))
+        reader.packetStarted(200_000, 0)
+        reader.consumeBytes(byteArrayOf(2))
+
+        await("two samples") { trackOutput.samples.size == 2 }
+        await("re-emitted format") { trackOutput.formats.size == 2 }
+        assertTrue(trackOutput.formats[0].initializationData.isEmpty())
+        assertEquals(2, trackOutput.formats[1].initializationData.size)
+        assertEquals("avc1.640033", trackOutput.formats[1].codecs)
+    }
+
+    @Test
+    fun extractParameterSetsHandlesStartCodeVariantsAndEmulationPrevention() {
+        val payload =
+            byteArrayOf(0, 0, 0, 1, 0x67, 0x64, 0x00, 0x33) +
+                byteArrayOf(0, 0, 1, 0x06, 0x05, 0x00, 0x00, 0x03, 0x01, 0x02) +
+                byteArrayOf(0, 0, 0, 1, 0x68, 0xE9.toByte()) +
+                byteArrayOf(0, 0, 1, 0x65, 0x11)
+        val (sps, pps) =
+            TranscodingH262Reader.extractParameterSets(ByteBuffer.wrap(payload), 0, payload.size)
+        assertTrue(sps!!.contentEquals(byteArrayOf(0, 0, 1, 0x67, 0x64, 0x00, 0x33)))
+        assertTrue(pps!!.contentEquals(byteArrayOf(0, 0, 1, 0x68, 0xE9.toByte())))
+        assertNull(TranscodingH262Reader.avcCodecString(byteArrayOf(0, 0, 1, 0x67, 0x64)))
+        assertEquals(
+            "avc1.640033",
+            TranscodingH262Reader.avcCodecString(byteArrayOf(0, 0, 1, 0x67, 0x64, 0x00, 0x33)),
+        )
     }
 
     @Test
@@ -281,6 +366,11 @@ class TranscodingH262ReaderTest {
         }
     }
 }
+
+private fun spsPpsIdrPayload(): ByteArray =
+    byteArrayOf(0, 0, 0, 1, 0x67, 0x64, 0x00, 0x33, 0xAC.toByte(), 0xD9.toByte(), 0x40) +
+        byteArrayOf(0, 0, 1, 0x68, 0xE9.toByte(), 0x7B, 0xCB.toByte()) +
+        byteArrayOf(0, 0, 0, 1, 0x65, 0x11, 0x22)
 
 private fun accessUnit(
     ptsUs: Long,
