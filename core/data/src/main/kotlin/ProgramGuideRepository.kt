@@ -34,6 +34,7 @@ import net.rokoucha.visiomata.model.ProgramGuide
 import net.rokoucha.visiomata.model.ProgramGuideAvailability
 import net.rokoucha.visiomata.model.RelatedProgram
 import net.rokoucha.visiomata.model.Service
+import net.rokoucha.visiomata.model.displayOrder
 import net.rokoucha.visiomata.network.ServerHttpClients
 import net.rokoucha.visiomata.settings.data.AuthenticationType
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
@@ -273,21 +274,17 @@ class ProgramGuideRepository(
      * Lightweight home refresh: re-fetches only the service catalogue (one small
      * request) and backfills programmes solely for channel types with nothing
      * cached. Cached guide data is never deleted.
+     *
+     * A cold start with no catalogue at all takes the same path: the catalogue
+     * lands after one small request so the home screen can publish the service
+     * list immediately, instead of waiting for a full programme fetch that can
+     * take minutes on low-end TV hardware.
      */
     private suspend fun refreshHomeSnapshotLight(
         settings: MirakurunSettings,
         source: String,
         now: Long,
     ) {
-        if (dao.serviceChannelTypes(source).isEmpty()) {
-            // Cold start with no catalogue at all: a single full fetch populates
-            // both home and the guide cache at once in roughly two requests.
-            refreshLocked(settings, force = true)
-            dao.serviceChannelTypes(source).forEach {
-                channelTypeRefreshedAt[source to it] = System.currentTimeMillis()
-            }
-            return
-        }
         refreshServicesLocked(settings, force = true)
         val missingTypes =
             dao.serviceChannelTypes(source).filter { dao.futureProgramCount(source, it, now) == 0 }
@@ -335,6 +332,11 @@ class ProgramGuideRepository(
      * Fetches every given service's schedule and adds all future programmes to
      * the cache without deleting anything still relevant, so fetched data feeds
      * both home and the guide.
+     *
+     * Each channel type is stored as soon as its own services finish, so
+     * observers can render one row at a time instead of waiting for every
+     * service. Types are backfilled in display order so the most-watched
+     * terrestrial row populates first.
      */
     private suspend fun fetchAndStoreServicePrograms(
         settings: MirakurunSettings,
@@ -346,23 +348,30 @@ class ProgramGuideRepository(
         val remote = RemoteGuideSource(settings)
         val requests = Semaphore(PROGRAM_REQUEST_CONCURRENCY)
         // Network latency dominates this path on TV. Fetch independent services in
-        // bounded parallel batches, then write bounded batches to Room.
-        val entities =
-            coroutineScope {
-                services
-                    .map { service ->
-                        async {
-                            requests.withPermit {
-                                remote
-                                    .programs(service.networkId, service.serviceId)
-                                    .filterFuturePrograms(now)
-                                    .map { it.toEntity(source, service.transportStreamId) }
-                            }
-                        }
-                    }.awaitAll()
-                    .flatten()
+        // bounded parallel batches, then write one channel type at a time to Room.
+        services
+            .groupBy { it.channelType }
+            .toList()
+            .sortedWith(compareBy({ ChannelType(it.first).displayOrder }, { it.first }))
+            .forEach { (_, typeServices) ->
+                val entities =
+                    coroutineScope {
+                        typeServices
+                            .map { service ->
+                                async {
+                                    requests.withPermit {
+                                        remote
+                                            .programs(service.networkId, service.serviceId)
+                                            .filterFuturePrograms(now)
+                                            .map { it.toEntity(source, service.transportStreamId) }
+                                    }
+                                }
+                            }.awaitAll()
+                            .flatten()
+                    }
+                if (entities.isNotEmpty()) dao.insertPrograms(entities)
             }
-        dao.storePrograms(source, entities, now - PROGRAM_PRUNE_GRACE_MILLIS)
+        dao.deleteExpiredPrograms(source, now - PROGRAM_PRUNE_GRACE_MILLIS)
     }
 
     suspend fun refresh(

@@ -96,7 +96,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.net.ssl.SSLException
 
-private sealed interface HomeUiState {
+internal sealed interface HomeUiState {
     data object Loading : HomeUiState
 
     data class Ready(
@@ -1032,30 +1032,15 @@ private class HomeState(
     }
 
     /**
-     * Publishes the home list only after the initial snapshot refresh completes, so the
-     * first paint always shows the complete service catalogue with programmes instead of
-     * a partially loaded list. A failed refresh still falls back to the cached catalogue
-     * when one exists; the error surface only replaces an empty home.
+     * Publishes the home list as soon as the service catalogue arrives, so the
+     * first paint never waits for the programme backfill behind it. The
+     * catalogue itself lands atomically, so the first paint still shows a
+     * complete service list; programmes fill in as each channel type finishes.
+     * A failed refresh still falls back to the cached catalogue when one
+     * exists; the error surface only replaces an empty home.
      */
     private fun publishIfSnapshotDone() {
-        if (!initialSnapshotDone) return
-        val guide = latestGuide ?: return
-        if (guide.services.isEmpty()) {
-            val error = initialSnapshotError
-            val next =
-                if (error == null) {
-                    HomeUiState.Ready(emptyList(), emptyList())
-                } else {
-                    HomeUiState.Error(error.message ?: "番組情報を取得できませんでした")
-                }
-            if (uiState != next) uiState = next
-            return
-        }
-        val types =
-            guide.services.map { it.channelType }.distinct().sortedWith(
-                compareBy<ChannelType>({ it.displayOrder }, { it.value }),
-            )
-        val next = HomeUiState.Ready(guide.serviceGroups(), types)
+        val next = homeUiStateFor(latestGuide, initialSnapshotDone, initialSnapshotError)
         if (uiState != next) uiState = next
     }
 
@@ -1103,6 +1088,23 @@ private class HomeState(
             refreshInProgress = false
         }
     }
+}
+
+internal fun homeUiStateFor(
+    guide: net.rokoucha.visiomata.model.ProgramGuide?,
+    snapshotDone: Boolean,
+    snapshotError: Throwable?,
+): HomeUiState {
+    if (guide == null || guide.services.isEmpty()) {
+        if (!snapshotDone) return HomeUiState.Loading
+        if (snapshotError == null) return HomeUiState.Ready(emptyList(), emptyList())
+        return HomeUiState.Error(snapshotError.message ?: "番組情報を取得できませんでした")
+    }
+    val types =
+        guide.services.map { it.channelType }.distinct().sortedWith(
+            compareBy<ChannelType>({ it.displayOrder }, { it.value }),
+        )
+    return HomeUiState.Ready(guide.serviceGroups(), types)
 }
 
 @Composable
