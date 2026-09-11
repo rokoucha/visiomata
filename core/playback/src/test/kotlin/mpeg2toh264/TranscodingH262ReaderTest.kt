@@ -35,10 +35,14 @@ class TranscodingH262ReaderTest {
         val samples = Collections.synchronizedList(mutableListOf<Sample>())
         private var pendingBytes = 0
 
+        @Synchronized
+        fun storedButUncommittedBytes(): Int = pendingBytes
+
         override fun format(format: Format) {
             formats.add(format)
         }
 
+        @Synchronized
         override fun sampleData(
             data: ParsableByteArray,
             length: Int,
@@ -47,6 +51,7 @@ class TranscodingH262ReaderTest {
             pendingBytes += length
         }
 
+        @Synchronized
         override fun sampleData(
             data: ParsableByteArray,
             length: Int,
@@ -56,19 +61,39 @@ class TranscodingH262ReaderTest {
             pendingBytes += length
         }
 
+        @Synchronized
         override fun sampleData(
             input: androidx.media3.common.DataReader,
             length: Int,
             allowEndOfInput: Boolean,
-        ): Int = throw UnsupportedOperationException()
+        ): Int = consumeFrom(input, length)
 
+        @Synchronized
         override fun sampleData(
             input: androidx.media3.common.DataReader,
             length: Int,
             allowEndOfInput: Boolean,
             sampleDataPart: Int,
-        ): Int = throw UnsupportedOperationException()
+        ): Int = consumeFrom(input, length)
 
+        // Mirrors SampleDataQueue: a single call stores at most one chunk, so production
+        // must loop until the full sample is written.
+        private fun consumeFrom(
+            input: androidx.media3.common.DataReader,
+            length: Int,
+        ): Int {
+            val chunk = ByteArray(minOf(length, SINGLE_READ_BYTES))
+            val count = input.read(chunk, 0, chunk.size)
+            if (count < 0) return count
+            pendingBytes += count
+            return count
+        }
+
+        private companion object {
+            const val SINGLE_READ_BYTES = 1_024
+        }
+
+        @Synchronized
         override fun sampleMetadata(
             timeUs: Long,
             flags: Int,
@@ -102,16 +127,22 @@ class TranscodingH262ReaderTest {
         val pushAttempts =
             java.util.concurrent.atomic
                 .AtomicInteger(0)
+        val releasedOutputs =
+            java.util.concurrent.atomic
+                .AtomicInteger(0)
         private val pushCount =
             java.util.concurrent.atomic
                 .AtomicInteger(0)
+
+        /** Set before the worker starts; sizes every emitted unit. */
+        var payloadSize = 5
 
         override fun push(
             data: ByteArray,
             ptsUs: Long,
             hasPts: Boolean,
             finish: Boolean,
-        ): ByteArray {
+        ): ByteBuffer {
             pushAttempts.incrementAndGet()
             check(gate.await(10, TimeUnit.SECONDS)) { "test gate was never released" }
             failure?.let { throw it }
@@ -119,12 +150,19 @@ class TranscodingH262ReaderTest {
             calls.add("push pts=$ptsUs finish=$finish")
             // Echo the input timestamp so assertions stay deterministic without sharing
             // mutable state between the loader thread (test) and the worker thread.
-            return accessUnit(
-                ptsUs = if (hasPts) ptsUs else 1_000L + index,
-                flags = if (index == 0) 1 else 0,
-                width = 1_920,
-                height = 1_080,
+            return ByteBuffer.wrap(
+                accessUnit(
+                    ptsUs = if (hasPts) ptsUs else 1_000L + index,
+                    flags = if (index == 0) 1 else 0,
+                    width = 1_920,
+                    height = 1_080,
+                    payload = ByteArray(payloadSize),
+                ),
             )
+        }
+
+        override fun releaseOutput(output: ByteBuffer) {
+            releasedOutputs.incrementAndGet()
         }
 
         override fun reset() {
@@ -136,6 +174,9 @@ class TranscodingH262ReaderTest {
     fun deliversSamplesInOrderWithFormat() {
         val trackOutput = RecordingTrackOutput()
         val transcoder = FakeTranscoder()
+        // Exceed the fake's single-read chunk so the test requires production to loop
+        // until each full sample is stored, mirroring SampleDataQueue.
+        transcoder.payloadSize = 3_000
         val reader = TranscodingH262Reader(DeinterlaceMetadataQueue(), transcoderFactory = { transcoder })
         reader.createTracks(FakeExtractorOutput(trackOutput), TsPayloadReader.TrackIdGenerator(0, 1))
 
@@ -146,9 +187,11 @@ class TranscodingH262ReaderTest {
 
         await("two samples") { trackOutput.samples.size == 2 }
         assertEquals(
-            listOf(Sample(100_000L, C.BUFFER_FLAG_KEY_FRAME, 5), Sample(200_000L, 0, 5)),
+            listOf(Sample(100_000L, C.BUFFER_FLAG_KEY_FRAME, 3_000), Sample(200_000L, 0, 3_000)),
             trackOutput.samples.toList(),
         )
+        await("both native outputs released") { transcoder.releasedOutputs.get() == 2 }
+        assertEquals(0, trackOutput.storedButUncommittedBytes())
         assertEquals(1, trackOutput.formats.size)
         assertEquals(MimeTypes.VIDEO_H264, trackOutput.formats.single().sampleMimeType)
         assertEquals(1_920, trackOutput.formats.single().width)

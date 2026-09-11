@@ -1,6 +1,7 @@
 package net.rokoucha.visiomata.playback.mpeg2toh264
 
 import androidx.media3.common.C
+import androidx.media3.common.DataReader
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.ParserException
@@ -17,6 +18,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.min
 
 /**
  * JNI boundary for the MPEG-2 to H.264 bridge, separated for testing.
@@ -25,12 +27,18 @@ import java.util.concurrent.atomic.AtomicReference
  * thread. [TranscodingH262Reader] confines all calls to its worker thread.
  */
 internal interface H262Transcoder {
+    /**
+     * Returns the native output allocation without copying. The caller passes it to
+     * [releaseOutput] exactly once. Null means the bridge itself failed.
+     */
     fun push(
         data: ByteArray,
         ptsUs: Long,
         hasPts: Boolean,
         finish: Boolean,
-    ): ByteArray
+    ): ByteBuffer?
+
+    fun releaseOutput(output: ByteBuffer)
 
     fun reset()
 }
@@ -52,7 +60,9 @@ internal class NativeH262Transcoder : H262Transcoder {
         ptsUs: Long,
         hasPts: Boolean,
         finish: Boolean,
-    ): ByteArray = Mpeg2ToH264Native.push(nativeState.handle, data, ptsUs, hasPts, finish)
+    ): ByteBuffer? = Mpeg2ToH264Native.pushDirect(nativeState.handle, data, ptsUs, hasPts, finish)
+
+    override fun releaseOutput(output: ByteBuffer) = Mpeg2ToH264Native.freeDirect(output)
 
     override fun reset() = Mpeg2ToH264Native.reset(nativeState.handle)
 
@@ -219,10 +229,20 @@ internal class TranscodingH262Reader(
                         }
 
                         is WorkItem.Input -> {
+                            var encoded: ByteBuffer? = null
                             try {
-                                emit(transcoder.push(item.bytes, item.ptsUs, item.hasPts, item.finish))
+                                encoded =
+                                    transcoder.push(item.bytes, item.ptsUs, item.hasPts, item.finish)
+                                        ?: error("Empty MPEG-2 transcoder output")
+                                emit(encoded)
                             } catch (error: Exception) {
                                 workerError.compareAndSet(null, error)
+                            } finally {
+                                try {
+                                    encoded?.let(transcoder::releaseOutput)
+                                } catch (error: Exception) {
+                                    workerError.compareAndSet(null, error)
+                                }
                             }
                         }
                     }
@@ -232,9 +252,9 @@ internal class TranscodingH262Reader(
             }
         }
 
-        private fun emit(encoded: ByteArray) {
+        private fun emit(encoded: ByteBuffer) {
             try {
-                val input = ByteBuffer.wrap(encoded).order(ByteOrder.LITTLE_ENDIAN)
+                val input = encoded.order(ByteOrder.LITTLE_ENDIAN)
                 require(input.remaining() >= HEADER_SIZE && input.int == OUTPUT_VERSION) {
                     "Unsupported MPEG-2 transcoder output"
                 }
@@ -286,9 +306,17 @@ internal class TranscodingH262Reader(
                 val size = input.readSize("access-unit size")
                 require(size <= input.remaining()) { "Truncated H.264 access-unit payload" }
                 updateFormat(format)
-                val sample = ByteArray(size)
-                input.get(sample)
-                output.sampleData(ParsableByteArray(sample), size)
+                // Feed the sample straight from the native buffer into the sample queue's own
+                // allocation; the only remaining copy is the unavoidable final store. The
+                // DataReader overload writes a single allocation chunk per call, so loop until
+                // the full sample is stored, mirroring the ParsableByteArray overload.
+                val sampleReader = ByteBufferSampleReader(input, size)
+                var bytesStored = 0
+                while (bytesStored < size) {
+                    val written = output.sampleData(sampleReader, size - bytesStored, false)
+                    require(written > 0) { "Sample write made no progress" }
+                    bytesStored += written
+                }
                 output.sampleMetadata(
                     ptsUs,
                     if ((flags and NATIVE_FLAG_KEY_FRAME) != 0) {
@@ -340,6 +368,29 @@ internal class TranscodingH262Reader(
         val pixelAspectWidth: Int,
         val pixelAspectHeight: Int,
     )
+
+    /**
+     * Streams one access-unit payload out of the shared native buffer. The reader is
+     * single-use and confined to the worker thread that owns both the buffer and the
+     * [TrackOutput] write.
+     */
+    private class ByteBufferSampleReader(
+        private val source: ByteBuffer,
+        private var remaining: Int,
+    ) : DataReader {
+        override fun read(
+            target: ByteArray,
+            offset: Int,
+            length: Int,
+        ): Int {
+            if (remaining <= 0) return C.RESULT_END_OF_INPUT
+            val count = min(length, min(remaining, source.remaining()))
+            if (count <= 0) return C.RESULT_END_OF_INPUT
+            source.get(target, offset, count)
+            remaining -= count
+            return count
+        }
+    }
 
     private companion object {
         val shutdownCleaner: Cleaner = Cleaner.create()

@@ -47,7 +47,9 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import net.rokoucha.visiomata.playback.R
 import net.rokoucha.visiomata.playback.bml.BmlWebView
 import net.rokoucha.visiomata.playback.bml.createBmlWebView
@@ -79,6 +81,11 @@ private val aribFontAssetPaths =
         "fonts/KosugiMaru-Regular.ttf",
         "fonts/rounded-mplus-1m-wadalab-comp-arib.ttf",
     )
+
+private data class PlaybackSetup(
+    val fontFiles: List<String>,
+    val transcodeMpeg2Video: Boolean,
+)
 
 internal data class VideoRectPx(
     val left: Int,
@@ -211,12 +218,27 @@ fun VisiomataPlayer(
     val currentOnPlaybackErrorChanged by rememberUpdatedState(onPlaybackErrorChanged)
     val currentOnIsPlayingChanged by rememberUpdatedState(onIsPlayingChanged)
     val memoryPolicy = remember(context) { PlaybackMemoryPolicy.from(context) }
-    val aribFontFiles =
-        remember {
-            aribFontAssetPaths.map { prepareAribCaptionFont(context, it).absolutePath } +
-                systemSymbolFontPaths()
-        }
-    val transcodeMpeg2Video = forceMpeg2Transcoding ?: !Mpeg2DecoderCapabilities.hasHardwareDecoder
+    // Font extraction and codec enumeration stall the main thread for hundreds of
+    // milliseconds on low-end storage, so resolve them off-thread. The player below stays
+    // black until ready, matching the previous behavior of blocking first composition.
+    var playbackSetup by remember(forceMpeg2Transcoding) { mutableStateOf<PlaybackSetup?>(null) }
+    LaunchedEffect(forceMpeg2Transcoding) {
+        playbackSetup =
+            withContext(Dispatchers.IO) {
+                val fontFiles =
+                    aribFontAssetPaths.map { prepareAribCaptionFont(context, it).absolutePath } +
+                        systemSymbolFontPaths()
+                val transcode = forceMpeg2Transcoding ?: !Mpeg2DecoderCapabilities.hasHardwareDecoder
+                PlaybackSetup(fontFiles, transcode)
+            }
+    }
+    val setup = playbackSetup
+    if (setup == null) {
+        Box(modifier = modifier.background(Color.Black))
+        return
+    }
+    val aribFontFiles = setup.fontFiles
+    val transcodeMpeg2Video = setup.transcodeMpeg2Video
     val engine =
         remember(
             url,
