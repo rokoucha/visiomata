@@ -28,7 +28,7 @@ media3 = "1.11.1"
 moshi = "1.15.2"
 nav3Core = "1.1.7"
 okhttp = "5.5.0"
-room = "2.8.4"
+room = "2.8.5"
 spotless = "8.10.2"
 tvMaterial = "1.1.0"
 
