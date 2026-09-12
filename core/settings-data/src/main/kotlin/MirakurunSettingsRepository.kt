@@ -25,6 +25,7 @@ class MirakurunSettingsRepository(
             .putEncryptedSecret(KEY_PASSWORD_ENCRYPTED, value.password)
             .putEncryptedSecret(KEY_BEARER_TOKEN_ENCRYPTED, value.bearerToken)
             .putString(KEY_MPEG2_PLAYBACK_MODE, value.mpeg2PlaybackMode.name)
+            .putString(KEY_AVC_DECODER_MODE, value.avcDecoderMode.name)
             .putBoolean(KEY_DEINTERLACE_ENABLED, value.deinterlaceEnabled)
             .putBoolean(KEY_DATA_BROADCASTING_ENABLED, value.dataBroadcastingEnabled)
             .putBoolean(KEY_DATA_BROADCASTING_INTERNET_ENABLED, value.dataBroadcastingInternetEnabled)
@@ -44,6 +45,11 @@ class MirakurunSettingsRepository(
                 .getString(KEY_MPEG2_PLAYBACK_MODE, null)
                 ?.let { stored -> Mpeg2PlaybackMode.entries.firstOrNull { it.name == stored } }
                 ?: Mpeg2PlaybackMode.Auto
+        val avcDecoderMode =
+            preferences
+                .getString(KEY_AVC_DECODER_MODE, null)
+                ?.let { stored -> AvcDecoderMode.entries.firstOrNull { it.name == stored } }
+                ?: AvcDecoderMode.Auto
         return MirakurunSettings(
             url = preferences.getString(KEY_URL, "").orEmpty(),
             authenticationType = authenticationType,
@@ -51,6 +57,7 @@ class MirakurunSettingsRepository(
             password = readEncryptedSecret(KEY_PASSWORD_ENCRYPTED),
             bearerToken = readEncryptedSecret(KEY_BEARER_TOKEN_ENCRYPTED),
             mpeg2PlaybackMode = mpeg2PlaybackMode,
+            avcDecoderMode = avcDecoderMode,
             deinterlaceEnabled = preferences.getBoolean(KEY_DEINTERLACE_ENABLED, true),
             dataBroadcastingEnabled = preferences.getBoolean(KEY_DATA_BROADCASTING_ENABLED, true),
             dataBroadcastingInternetEnabled =
@@ -86,6 +93,7 @@ class MirakurunSettingsRepository(
         const val KEY_PASSWORD_ENCRYPTED = "mirakurun.password.encrypted"
         const val KEY_BEARER_TOKEN_ENCRYPTED = "mirakurun.bearer_token.encrypted"
         const val KEY_MPEG2_PLAYBACK_MODE = "playback.mpeg2_playback_mode"
+        const val KEY_AVC_DECODER_MODE = "playback.avc_decoder_mode"
         const val KEY_DEINTERLACE_ENABLED = "playback.deinterlace_enabled"
         const val KEY_DATA_BROADCASTING_ENABLED = "playback.data_broadcasting_enabled"
         const val KEY_DATA_BROADCASTING_INTERNET_ENABLED =

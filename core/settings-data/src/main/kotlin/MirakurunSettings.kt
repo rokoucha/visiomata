@@ -16,6 +16,12 @@ enum class Mpeg2PlaybackMode {
 val Mpeg2PlaybackMode.requiresDeviceMpeg2Decoder: Boolean
     get() = this == Mpeg2PlaybackMode.ForceSoftwareDecoder || this == Mpeg2PlaybackMode.ForceHardwareDecoder
 
+enum class AvcDecoderMode {
+    Auto,
+    ForceHardwareDecoder,
+    ForceSoftwareDecoder,
+}
+
 data class MirakurunSettings(
     val url: String = "",
     val authenticationType: AuthenticationType = AuthenticationType.None,
@@ -23,6 +29,7 @@ data class MirakurunSettings(
     val password: String = "",
     val bearerToken: String = "",
     val mpeg2PlaybackMode: Mpeg2PlaybackMode = Mpeg2PlaybackMode.Auto,
+    val avcDecoderMode: AvcDecoderMode = AvcDecoderMode.Auto,
     val deinterlaceEnabled: Boolean = true,
     val dataBroadcastingEnabled: Boolean = true,
     val dataBroadcastingInternetEnabled: Boolean = false,
