@@ -85,6 +85,7 @@ private val aribFontAssetPaths =
 private data class PlaybackSetup(
     val fontFiles: List<String>,
     val transcodeMpeg2Video: Boolean,
+    val useSoftwareAvcDecoder: Boolean,
 )
 
 internal data class VideoRectPx(
@@ -186,6 +187,7 @@ fun VisiomataPlayer(
     bearerToken: String = "",
     forceMpeg2Transcoding: Boolean? = null,
     forceHardwareMpeg2Decoder: Boolean? = null,
+    forceHardwareAvcDecoder: Boolean? = null,
     deinterlaceEnabled: Boolean = true,
     dataBroadcastingEnabled: Boolean = true,
     dataBroadcastingInternetEnabled: Boolean = false,
@@ -221,15 +223,18 @@ fun VisiomataPlayer(
     // Font extraction and codec enumeration stall the main thread for hundreds of
     // milliseconds on low-end storage, so resolve them off-thread. The player below stays
     // black until ready, matching the previous behavior of blocking first composition.
-    var playbackSetup by remember(forceMpeg2Transcoding) { mutableStateOf<PlaybackSetup?>(null) }
-    LaunchedEffect(forceMpeg2Transcoding) {
+    var playbackSetup by
+        remember(forceMpeg2Transcoding, forceHardwareAvcDecoder) { mutableStateOf<PlaybackSetup?>(null) }
+    LaunchedEffect(forceMpeg2Transcoding, forceHardwareAvcDecoder) {
         playbackSetup =
             withContext(Dispatchers.IO) {
                 val fontFiles =
                     aribFontAssetPaths.map { prepareAribCaptionFont(context, it).absolutePath } +
                         systemSymbolFontPaths()
                 val transcode = forceMpeg2Transcoding ?: !Mpeg2DecoderCapabilities.hasHardwareDecoder
-                PlaybackSetup(fontFiles, transcode)
+                // Auto leaves the choice to MediaCodec for now. Devices whose hardware decoder
+                // cannot handle MBAFF need the software decoder picked by hand.
+                PlaybackSetup(fontFiles, transcode, forceHardwareAvcDecoder == false)
             }
     }
     val setup = playbackSetup
@@ -239,6 +244,7 @@ fun VisiomataPlayer(
     }
     val aribFontFiles = setup.fontFiles
     val transcodeMpeg2Video = setup.transcodeMpeg2Video
+    val useSoftwareAvcDecoder = setup.useSoftwareAvcDecoder
     val engine =
         remember(
             url,
@@ -253,6 +259,7 @@ fun VisiomataPlayer(
             serviceId,
             memoryPolicy,
             transcodeMpeg2Video,
+            useSoftwareAvcDecoder,
         ) {
             VisiomataPlaybackEngine(
                 context.applicationContext,
@@ -264,6 +271,7 @@ fun VisiomataPlayer(
                     forceMpeg2Transcoding = forceMpeg2Transcoding,
                     forceHardwareMpeg2Decoder = forceHardwareMpeg2Decoder,
                     transcodeMpeg2Video = transcodeMpeg2Video,
+                    useSoftwareAvcDecoder = useSoftwareAvcDecoder,
                     deinterlaceEnabled = deinterlaceEnabled,
                     dataBroadcastingEnabled = dataBroadcastingEnabled,
                     mahironApiRoot = mahironApiRoot,
@@ -290,6 +298,7 @@ fun VisiomataPlayer(
     var bmlWebView by remember(bmlMessageSource) { mutableStateOf<BmlWebView?>(null) }
     val videoPath =
         when {
+            transcodeMpeg2Video && useSoftwareAvcDecoder -> "mpeg2-to-h264-software-avc"
             transcodeMpeg2Video -> "mpeg2-to-h264"
             forceHardwareMpeg2Decoder == false -> "mpeg2-software"
             else -> "mpeg2-hardware"

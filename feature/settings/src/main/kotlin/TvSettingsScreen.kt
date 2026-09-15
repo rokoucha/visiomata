@@ -52,6 +52,7 @@ import androidx.tv.material3.SelectableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import net.rokoucha.visiomata.settings.data.AuthenticationType
+import net.rokoucha.visiomata.settings.data.AvcDecoderMode
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
 import net.rokoucha.visiomata.settings.data.Mpeg2PlaybackMode
 import net.rokoucha.visiomata.settings.data.requiresDeviceMpeg2Decoder
@@ -564,6 +565,39 @@ private fun TvVideoPlayerSettings(
         SupportingText("MPEG-2デコーダーの無い端末では映像が表示されず音声のみになります。「自動」に変更してください。")
     }
     Spacer(Modifier.height(28.dp))
+    CategoryLabel("H.264デコーダー")
+    Spacer(Modifier.height(12.dp))
+    val avcSoftwareDecoderPresent = rememberAvcSoftwareDecoderPresent()
+    val avcDecoderSelectable =
+        settings.mpeg2PlaybackMode == Mpeg2PlaybackMode.Auto ||
+            settings.mpeg2PlaybackMode == Mpeg2PlaybackMode.ForceTranscode
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        AvcDecoderMode.entries.forEach { mode ->
+            // Forcing software decoding shows audio only without a software decoder.
+            val selectable =
+                avcDecoderSelectable &&
+                    (mode != AvcDecoderMode.ForceSoftwareDecoder || avcSoftwareDecoderPresent != false)
+            Surface(
+                selected = settings.avcDecoderMode == mode,
+                onClick = { update(settings.copy(avcDecoderMode = mode)) },
+                modifier = Modifier.fillMaxWidth().returnFocusTo(categoryFocusRequester),
+                enabled = selectable,
+                colors = tvSelectableSurfaceColors(),
+            ) {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                    Text(mode.tvTitle(), style = MaterialTheme.typography.titleMedium)
+                    SupportingText(
+                        when {
+                            !avcDecoderSelectable -> "H.264へ変換するときだけ使用します"
+                            !selectable -> "この端末にはソフトウェアH.264デコーダーが無いため選択できません"
+                            else -> mode.tvDescription()
+                        },
+                    )
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(28.dp))
     CategoryLabel("デインターレース")
     Spacer(Modifier.height(12.dp))
     val canTranscode =
@@ -586,6 +620,20 @@ private fun TvVideoPlayerSettings(
     }
     AutoSaveMessage()
 }
+
+private fun AvcDecoderMode.tvTitle(): String =
+    when (this) {
+        AvcDecoderMode.Auto -> "自動"
+        AvcDecoderMode.ForceHardwareDecoder -> "ハードウェアデコード"
+        AvcDecoderMode.ForceSoftwareDecoder -> "ソフトウェアデコード"
+    }
+
+private fun AvcDecoderMode.tvDescription(): String =
+    when (this) {
+        AvcDecoderMode.Auto -> "端末が選んだH.264デコーダーを使用します"
+        AvcDecoderMode.ForceHardwareDecoder -> "ハードウェアH.264デコーダーを優先します"
+        AvcDecoderMode.ForceSoftwareDecoder -> "ソフトウェアH.264デコーダーを優先します。CPU負荷が高まります"
+    }
 
 private fun Mpeg2PlaybackMode.tvTitle(): String =
     when (this) {

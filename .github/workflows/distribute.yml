@@ -94,7 +94,7 @@ jobs:
       - name: Install Firebase CLI
         env:
           # renovate: datasource=npm depName=firebase-tools
-          FIREBASE_CLI_VERSION: '15.29.0'
+          FIREBASE_CLI_VERSION: '15.30.0'
         run: npm install --global "firebase-tools@$FIREBASE_CLI_VERSION"
       - name: Skip obsolete distributions
         id: current

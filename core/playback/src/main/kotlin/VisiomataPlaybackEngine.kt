@@ -47,6 +47,7 @@ internal data class VisiomataPlaybackEngineConfig(
     val forceMpeg2Transcoding: Boolean?,
     val forceHardwareMpeg2Decoder: Boolean?,
     val transcodeMpeg2Video: Boolean,
+    val useSoftwareAvcDecoder: Boolean,
     val deinterlaceEnabled: Boolean,
     val dataBroadcastingEnabled: Boolean,
     val mahironApiRoot: String?,
@@ -394,24 +395,28 @@ internal class VisiomataPlaybackEngine(
 
     private fun createRenderersFactory(): DefaultRenderersFactory =
         DefaultRenderersFactory(applicationContext).apply {
-            if (!config.transcodeMpeg2Video && config.forceHardwareMpeg2Decoder != null) {
-                setMediaCodecSelector(
-                    MediaCodecSelector { mimeType, secure, tunneling ->
-                        val decoderInfos = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
-                        if (mimeType == MimeTypes.VIDEO_MPEG2) {
-                            decoderInfos.filter { codec ->
-                                if (config.forceHardwareMpeg2Decoder) {
-                                    codec.hardwareAccelerated
-                                } else {
-                                    codec.softwareOnly
-                                }
-                            }
-                        } else {
-                            decoderInfos
-                        }
+            val preference =
+                VideoDecoderPreference(
+                    forceHardwareMpeg2Decoder =
+                        if (config.transcodeMpeg2Video) null else config.forceHardwareMpeg2Decoder,
+                    useSoftwareAvcDecoder = config.useSoftwareAvcDecoder,
+                    onEmptyFallback = { mimeType ->
+                        Log.w("VisiomataPlayer", "No decoder matched the filter for $mimeType, using defaults")
                     },
                 )
+            if (!preference.filtersAnything) {
+                return@apply
             }
+            setMediaCodecSelector(
+                MediaCodecSelector { mimeType, secure, tunneling ->
+                    preference.apply(
+                        mimeType = mimeType,
+                        decoders = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling),
+                        softwareOnly = { codec -> codec.softwareOnly },
+                        hardwareAccelerated = { codec -> codec.hardwareAccelerated },
+                    )
+                },
+            )
         }
 }
 
@@ -475,11 +480,12 @@ private fun authorizationHeader(config: VisiomataPlaybackEngineConfig): String? 
     }
 
 private fun logConfiguration(config: VisiomataPlaybackEngineConfig) {
+    val avcDecoder = if (config.useSoftwareAvcDecoder) " (AVC decoder: software)" else ""
     Log.i(
         "VisiomataPlayer",
         when {
             config.forceMpeg2Transcoding == true -> {
-                "Video path: forced MPEG-2 to H.264 transcode"
+                "Video path: forced MPEG-2 to H.264 transcode$avcDecoder"
             }
 
             config.forceMpeg2Transcoding == false && config.forceHardwareMpeg2Decoder == true -> {
@@ -495,7 +501,7 @@ private fun logConfiguration(config: VisiomataPlaybackEngineConfig) {
             }
 
             config.transcodeMpeg2Video -> {
-                "Video path: MPEG-2 to H.264 fallback"
+                "Video path: MPEG-2 to H.264 fallback$avcDecoder"
             }
 
             else -> {

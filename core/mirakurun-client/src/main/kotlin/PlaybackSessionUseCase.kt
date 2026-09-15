@@ -2,6 +2,7 @@ package net.rokoucha.visiomata.mirakurun
 
 import kotlinx.coroutines.CancellationException
 import net.rokoucha.visiomata.settings.data.AuthenticationType
+import net.rokoucha.visiomata.settings.data.AvcDecoderMode
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
 import net.rokoucha.visiomata.settings.data.Mpeg2PlaybackMode
 
@@ -65,6 +66,7 @@ class PlaybackSessionUseCase(
 
                     Mpeg2PlaybackMode.ForceHardwareDecoder -> true
                 },
+            forceHardwareAvcDecoder = settings.avcDecoderMode.forcesHardwareDecoder,
             deinterlaceEnabled = settings.deinterlaceEnabled,
             dataBroadcastingEnabled = settings.dataBroadcastingEnabled,
             dataBroadcastingInternetEnabled = settings.dataBroadcastingInternetEnabled,
@@ -75,6 +77,15 @@ class PlaybackSessionUseCase(
     }
 }
 
+/** Null leaves the decoder choice to MediaCodec. */
+private val AvcDecoderMode.forcesHardwareDecoder: Boolean?
+    get() =
+        when (this) {
+            AvcDecoderMode.Auto -> null
+            AvcDecoderMode.ForceSoftwareDecoder -> false
+            AvcDecoderMode.ForceHardwareDecoder -> true
+        }
+
 data class PlaybackSession(
     val streamUrl: String,
     val basicAuthUsername: String,
@@ -82,6 +93,7 @@ data class PlaybackSession(
     val bearerToken: String,
     val forceMpeg2Transcoding: Boolean?,
     val forceHardwareMpeg2Decoder: Boolean?,
+    val forceHardwareAvcDecoder: Boolean?,
     val deinterlaceEnabled: Boolean,
     val dataBroadcastingEnabled: Boolean,
     val dataBroadcastingInternetEnabled: Boolean,

@@ -1202,6 +1202,7 @@ private fun ConfiguredPlayerScreen(
         bearerToken = session.bearerToken,
         forceMpeg2Transcoding = session.forceMpeg2Transcoding,
         forceHardwareMpeg2Decoder = session.forceHardwareMpeg2Decoder,
+        forceHardwareAvcDecoder = session.forceHardwareAvcDecoder,
         deinterlaceEnabled = session.deinterlaceEnabled,
         dataBroadcastingEnabled = session.dataBroadcastingEnabled,
         dataBroadcastingInternetEnabled = session.dataBroadcastingInternetEnabled,

@@ -48,6 +48,7 @@ import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import net.rokoucha.visiomata.settings.data.AuthenticationType
+import net.rokoucha.visiomata.settings.data.AvcDecoderMode
 import net.rokoucha.visiomata.settings.data.MirakurunSettings
 import net.rokoucha.visiomata.settings.data.Mpeg2PlaybackMode
 import net.rokoucha.visiomata.settings.data.requiresDeviceMpeg2Decoder
@@ -290,6 +291,56 @@ fun VideoPlayerSettingsScreen(
                 )
             }
             Text(
+                text = "H.264デコーダー",
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(start = 8.dp, top = 24.dp, bottom = 8.dp),
+            )
+            val avcSoftwareDecoderPresent = rememberAvcSoftwareDecoderPresent()
+            val avcDecoderSelectable =
+                settings.mpeg2PlaybackMode == Mpeg2PlaybackMode.Auto ||
+                    settings.mpeg2PlaybackMode == Mpeg2PlaybackMode.ForceTranscode
+            Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                AvcDecoderMode.entries.forEachIndexed { index, mode ->
+                    // Forcing software decoding shows audio only without a software decoder.
+                    val selectable =
+                        avcDecoderSelectable &&
+                            (
+                                mode != AvcDecoderMode.ForceSoftwareDecoder ||
+                                    avcSoftwareDecoderPresent != false
+                            )
+                    SegmentedListItem(
+                        checked = settings.avcDecoderMode == mode,
+                        onCheckedChange = {
+                            onSettingsChange(settings.copy(avcDecoderMode = mode))
+                        },
+                        enabled = selectable,
+                        shapes =
+                            ListItemDefaults.segmentedShapes(
+                                index = index,
+                                count = AvcDecoderMode.entries.size,
+                            ),
+                        content = { Text(mode.title()) },
+                        supportingContent = {
+                            Text(
+                                when {
+                                    !avcDecoderSelectable -> "H.264へ変換するときだけ使用します"
+                                    !selectable -> "この端末にはソフトウェアH.264デコーダーが無いため選択できません"
+                                    else -> mode.description()
+                                },
+                            )
+                        },
+                        leadingContent = {
+                            RadioButton(
+                                selected = settings.avcDecoderMode == mode,
+                                onClick = null,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            Text(
                 text = "デインターレース",
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelLarge,
@@ -342,6 +393,20 @@ private fun Mpeg2PlaybackMode.summary(): String =
         Mpeg2PlaybackMode.ForceTranscode -> "H.264へ変換"
         Mpeg2PlaybackMode.ForceSoftwareDecoder -> "ソフトウェアデコード"
         Mpeg2PlaybackMode.ForceHardwareDecoder -> "ハードウェアデコード"
+    }
+
+private fun AvcDecoderMode.title(): String =
+    when (this) {
+        AvcDecoderMode.Auto -> "自動"
+        AvcDecoderMode.ForceHardwareDecoder -> "ハードウェアデコード"
+        AvcDecoderMode.ForceSoftwareDecoder -> "ソフトウェアデコード"
+    }
+
+private fun AvcDecoderMode.description(): String =
+    when (this) {
+        AvcDecoderMode.Auto -> "端末が選んだH.264デコーダーを使用します"
+        AvcDecoderMode.ForceHardwareDecoder -> "ハードウェアH.264デコーダーを優先します"
+        AvcDecoderMode.ForceSoftwareDecoder -> "ソフトウェアH.264デコーダーを優先します。CPU負荷が高まります"
     }
 
 private fun Mpeg2PlaybackMode.description(): String =
