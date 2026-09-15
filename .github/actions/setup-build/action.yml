@@ -30,6 +30,10 @@ runs:
         cache-dependency-path: core/playback/web-bml-wrapper/package-lock.json
         package-manager-cache: false
     - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+      with:
+        # Default `tools platform-tools` fails: the obsolete `tools` package was removed from Google's repository.
+        # CI only runs unit tests, lint, and APK assembly, so no extra packages (e.g. platform-tools) are needed here.
+        packages: ''
     - name: Install Android SDK packages
       shell: bash
       run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
