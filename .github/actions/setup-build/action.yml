@@ -29,7 +29,7 @@ runs:
         cache: ${{ inputs.cache-disabled != 'true' && inputs.cache-read-only != 'true' && 'npm' || '' }}
         cache-dependency-path: core/playback/web-bml-wrapper/package-lock.json
         package-manager-cache: false
-    - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+    - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       with:
         # Default `tools platform-tools` fails: the obsolete `tools` package was removed from Google's repository.
         # CI only runs unit tests, lint, and APK assembly, so no extra packages (e.g. platform-tools) are needed here.
