@@ -19,6 +19,18 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # Direct backend export (stage 1; Collector relay follows in stage 2).
+      # Empty when the secret is missing (e.g. fork PRs), which disables tracing.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT != '' && format('{0}/v1/traces', secrets.OTEL_EXPORTER_OTLP_ENDPOINT) || '' }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      OTEL_RESOURCE_ATTRIBUTES: >-
+        github.workflow=${{ github.workflow }},
+        github.event_name=${{ github.event_name }},
+        git.branch=${{ github.head_ref || github.ref_name }},
+        github.run_id=${{ github.run_id }},
+        github.run_attempt=${{ github.run_attempt }},
+        github.actor=${{ github.actor }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

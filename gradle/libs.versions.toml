@@ -28,6 +28,7 @@ media3 = "1.11.1"
 moshi = "1.15.2"
 nav3Core = "1.1.7"
 okhttp = "5.5.0"
+opentelemetryBuild = "4.8.0"
 room = "2.8.5"
 spotless = "8.10.2"
 tvMaterial = "1.1.0"
@@ -102,4 +103,5 @@ hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 openapi-generator = { id = "org.openapi.generator", version = "7.25.0" }
+opentelemetry-build = { id = "com.atkinsondev.opentelemetry-build", version.ref = "opentelemetryBuild" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
