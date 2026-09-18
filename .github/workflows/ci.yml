@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      # Direct backend export (stage 1; Collector relay follows in stage 2).
-      # Empty when the secret is missing (e.g. fork PRs), which disables tracing.
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT != '' && format('{0}/v1/traces', secrets.OTEL_EXPORTER_OTLP_ENDPOINT) || '' }}
-      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      # Gradle exports to the local Collector relay (started below); the Collector
+      # attaches backend auth. The backend URL secret is consumed by the Collector.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://127.0.0.1:4318/v1/traces
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
       OTEL_RESOURCE_ATTRIBUTES: >-
         github.workflow=${{ github.workflow }},
         github.event_name=${{ github.event_name }},
@@ -36,6 +36,9 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: ./.github/actions/setup-otel-collector
+        with:
+          api-key: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
       - uses: ./.github/actions/setup-build
       - name: Create Firebase configuration for build checks
         # Fork PRs can build without access to the real Firebase project or secrets.

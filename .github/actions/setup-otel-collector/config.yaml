@@ -1,0 +1,138 @@
+# OpenTelemetry Collector relay for Gradle build traces.
+#
+# The Gradle plugin exports OTLP/HTTP to the receiver below; this Collector
+# filters and renames spans, derives build-duration metrics via spanmetrics,
+# and forwards both to the OTLP backend with auth headers attached here so
+# build clients never handle credentials.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  # Drop spans of tasks that did no work; they dominate traces as noise.
+  # Values are Gradle TaskOutcome enum names (underscores, not hyphens).
+  filter/noop-tasks:
+    error_mode: ignore
+    traces:
+      span:
+        - >-
+          attributes["task.outcome"] == "UP_TO_DATE" or
+          attributes["task.outcome"] == "NO_SOURCE" or
+          attributes["task.outcome"] == "SKIPPED"
+  # The plugin names every root span uniformly; rename to "<workflow>: <tasks>".
+  transform/root-span-name:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - >-
+            set(name, Concat([resource.attributes["github.workflow"], ": ",
+            attributes["build.task.names"]], "")) where IsRootSpan()
+  # Surface failed builds/tasks as ERROR spans.
+  transform/span-status:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - >-
+            set(status.code, STATUS_CODE_ERROR)
+            where attributes["build.success"] == false or attributes["error"] == true
+  transform/deployment-environment:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - >-
+            set(attributes["deployment.environment.name"],
+            attributes["github.workflow"])
+  # Metrics pipeline only: keep the root span, which carries the build duration.
+  filter/root-span-only:
+    error_mode: ignore
+    traces:
+      span:
+        - not IsRootSpan()
+  # spanmetrics reads dimensions from span attributes, so copy the resource
+  # attributes used as dimensions down first. Non-default branches roll up to
+  # "other" to bound metric cardinality.
+  transform/metric-dimensions:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - >-
+            set(attributes["github.workflow"],
+            resource.attributes["github.workflow"])
+          - >-
+            set(attributes["github.event_name"],
+            resource.attributes["github.event_name"])
+          - >-
+            set(attributes["git.branch"], "main")
+            where resource.attributes["git.branch"] == "main"
+          - >-
+            set(attributes["git.branch"], "other")
+            where resource.attributes["git.branch"] != "main"
+  # Per-run values must never become metric labels.
+  transform/drop-unstable-resource-attributes:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "github.run_id")
+          - delete_key(attributes, "github.run_attempt")
+          - delete_key(attributes, "github.actor")
+          - delete_key(attributes, "git.branch")
+  batch: {}
+
+connectors:
+  spanmetrics:
+    namespace: gradle.build
+    histogram:
+      unit: s
+      explicit:
+        # 1 minute to 45 minutes; Gradle builds are minutes long.
+        buckets: [60s, 120s, 300s, 600s, 900s, 1200s, 1800s, 2700s]
+    dimensions:
+      - name: build.task.names
+      - name: build.success
+      - name: github.workflow
+      - name: github.event_name
+      - name: git.branch
+    exclude_dimensions: [collector.instance.id]
+    # Throwaway per-job Collector: DELTA keeps counters restart-safe.
+    aggregation_temporality: AGGREGATION_TEMPORALITY_DELTA
+    metrics_flush_interval: 5s
+
+exporters:
+  otlphttp/backend:
+    endpoint: ${env:OTEL_EXPORTER_OTLP_ENDPOINT}
+    headers:
+      Authorization: Bearer ${env:OTEL_BACKEND_API_KEY}
+
+service:
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors:
+        - filter/noop-tasks
+        - transform/root-span-name
+        - transform/span-status
+        - transform/deployment-environment
+        - batch
+      exporters: [otlphttp/backend]
+    traces/build-duration-metrics:
+      receivers: [otlp]
+      processors:
+        - filter/root-span-only
+        - transform/root-span-name
+        - transform/metric-dimensions
+        - transform/drop-unstable-resource-attributes
+      exporters: [spanmetrics]
+    metrics:
+      receivers: [spanmetrics]
+      processors: [batch]
+      exporters: [otlphttp/backend]
