@@ -53,6 +53,7 @@ import kotlinx.coroutines.withContext
 import net.rokoucha.visiomata.playback.R
 import net.rokoucha.visiomata.playback.bml.BmlWebView
 import net.rokoucha.visiomata.playback.bml.createBmlWebView
+import net.rokoucha.visiomata.playback.mpeg2toh264.AvcMbaffProbe
 import net.rokoucha.visiomata.playback.mpeg2toh264.Mpeg2DecoderCapabilities
 import java.io.File
 import kotlin.math.roundToInt
@@ -232,9 +233,15 @@ fun VisiomataPlayer(
                     aribFontAssetPaths.map { prepareAribCaptionFont(context, it).absolutePath } +
                         systemSymbolFontPaths()
                 val transcode = forceMpeg2Transcoding ?: !Mpeg2DecoderCapabilities.hasHardwareDecoder
-                // Auto leaves the choice to MediaCodec for now. Devices whose hardware decoder
-                // cannot handle MBAFF need the software decoder picked by hand.
-                PlaybackSetup(fontFiles, transcode, forceHardwareAvcDecoder == false)
+                // Auto decodes a small MBAFF clip built like the mpeg2toh264 output once, to see
+                // whether the hardware decoder copes. A device blocklist would go stale instead.
+                val useSoftwareAvc =
+                    when (forceHardwareAvcDecoder) {
+                        true -> false
+                        false -> true
+                        null -> transcode && !AvcMbaffProbe.hardwareDecodesMbaff(context)
+                    }
+                PlaybackSetup(fontFiles, transcode, useSoftwareAvc)
             }
     }
     val setup = playbackSetup
