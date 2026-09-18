@@ -32,11 +32,26 @@ jobs:
       FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
       FIREBASE_BETA_APP_ID: ${{ vars.FIREBASE_BETA_APP_ID }}
       FIREBASE_TESTER_GROUPS: ${{ vars.FIREBASE_TESTER_GROUPS }}
+      # Gradle exports to the local Collector relay (started below); the Collector
+      # attaches backend auth. The backend URL secret is consumed by the Collector.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://127.0.0.1:4318/v1/traces
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      OTEL_RESOURCE_ATTRIBUTES: >-
+        github.workflow=${{ github.workflow }},
+        github.event_name=${{ github.event_name }},
+        git.branch=${{ github.head_ref || github.ref_name }},
+        github.run_id=${{ github.run_id }},
+        github.run_attempt=${{ github.run_attempt }},
+        github.actor=${{ github.actor }},
+        app.variant=appDistribution
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           persist-credentials: false
+      - uses: ./.github/actions/setup-otel-collector
+        with:
+          api-key: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
       - name: Validate environment configuration
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}

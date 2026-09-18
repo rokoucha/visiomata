@@ -1,0 +1,7 @@
+name: Stop OpenTelemetry Collector
+description: Flush and stop the Collector started by setup-otel-collector (runs as a post step)
+runs:
+  using: node24
+  main: main.js
+  post: post.js
+  post-if: always()

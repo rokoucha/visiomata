@@ -1,0 +1,41 @@
+name: Set up OpenTelemetry Collector
+description: Start a local otelcol-contrib relay for Gradle build traces and metrics
+inputs:
+  api-key:
+    description: >-
+      Value of the OTEL_EXPORTER_OTLP_HEADERS secret ("Authorization=Bearer <token>";
+      a bare token is also accepted). Empty skips the Collector (e.g. fork PRs).
+    required: true
+    default: ''
+  collector-version:
+    description: Version of otelcol-contrib to install
+    # renovate: datasource=github-releases depName=open-telemetry/opentelemetry-collector-releases
+    default: 'v0.161.0'
+runs:
+  using: composite
+  steps:
+    - name: Restore cached Collector binary
+      id: restore
+      if: ${{ inputs.api-key != '' }}
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/otelcol
+        key: otelcol-contrib-${{ inputs.collector-version }}-${{ runner.arch }}
+    - name: Start OpenTelemetry Collector
+      if: ${{ inputs.api-key != '' }}
+      shell: bash
+      env:
+        OTEL_COLLECTOR_API_KEY: ${{ inputs.api-key }}
+        OTEL_COLLECTOR_VERSION: ${{ inputs.collector-version }}
+      run: '"${GITHUB_ACTION_PATH}/scripts/start-collector.sh"'
+    - name: Save Collector binary to cache
+      if: ${{ inputs.api-key != '' && steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ${{ runner.temp }}/otelcol
+        key: otelcol-contrib-${{ inputs.collector-version }}-${{ runner.arch }}
+    # The post step of this JavaScript action stops the Collector at job end
+    # (post-if: always), flushing traces and DELTA metrics even on build failure.
+    - name: Register Collector shutdown hook
+      if: ${{ inputs.api-key != '' }}
+      uses: ./.github/actions/setup-otel-collector/stop
