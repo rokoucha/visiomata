@@ -3,6 +3,7 @@ import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.openapi.generator)
+    alias(libs.plugins.ksp)
 }
 
 val generatedMirakurunDir = layout.buildDirectory.dir("generated/openapi/mirakurun")
@@ -36,8 +37,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.core)
     implementation(libs.moshi)
-    implementation(libs.moshi.kotlin)
     implementation(libs.moshi.adapters)
+    ksp(libs.moshi.kotlin.codegen)
 
     testImplementation(libs.junit)
 }
@@ -73,6 +74,10 @@ fun GenerateTask.configureClient(
             "dateLibrary" to "string",
             "enumPropertyNaming" to "UPPERCASE",
             "serializationLibrary" to "moshi",
+            // Generate @JsonClass(generateAdapter = true) models so Moshi uses
+            // compile-time adapters. The reflective KotlinJsonAdapterFactory
+            // breaks under R8 (kotlin-reflect cannot call default constructors).
+            "moshiCodeGen" to "true",
             "useCoroutines" to "true",
             "useSettingsGradle" to "false",
             "hideGenerationTimestamp" to "true",
@@ -114,9 +119,12 @@ val arrangeGeneratedApis =
         into(arrangedKotlinDir)
     }
 
-tasks.matching { it.name.startsWith("compile") && it.name.endsWith("Kotlin") }.configureEach {
-    dependsOn(arrangeGeneratedApis)
-}
+tasks
+    .matching {
+        (it.name.startsWith("compile") || it.name.startsWith("ksp")) && it.name.endsWith("Kotlin")
+    }.configureEach {
+        dependsOn(arrangeGeneratedApis)
+    }
 
 tasks.matching { it.name.startsWith("extract") && it.name.endsWith("Annotations") }.configureEach {
     dependsOn(arrangeGeneratedApis)
