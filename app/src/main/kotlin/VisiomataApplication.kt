@@ -25,7 +25,8 @@ private object FirebaseFeedbackInsets : Application.ActivityLifecycleCallbacks {
     private const val FEEDBACK_ACTIVITY =
         "com.google.firebase.appdistribution.impl.FeedbackActivity"
 
-    override fun onActivityCreated(
+    // Run after FeedbackActivity.onCreate so AppCompat has installed its content view.
+    override fun onActivityPostCreated(
         activity: Activity,
         savedInstanceState: Bundle?,
     ) {
@@ -54,10 +55,15 @@ private object FirebaseFeedbackInsets : Application.ActivityLifecycleCallbacks {
                 right = initialPaddingRight + safeInsets.right,
                 bottom = initialPaddingBottom + safeInsets.bottom,
             )
-            windowInsets
+            WindowInsetsCompat.CONSUMED
         }
         ViewCompat.requestApplyInsets(content)
     }
+
+    override fun onActivityCreated(
+        activity: Activity,
+        savedInstanceState: Bundle?,
+    ) = Unit
 
     override fun onActivityStarted(activity: Activity) = Unit
 
