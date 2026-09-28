@@ -1,3 +1,5 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package net.rokoucha.visiomata.playback
 
 import android.content.Context
