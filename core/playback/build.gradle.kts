@@ -313,6 +313,7 @@ dependencies {
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.extractor)
+    implementation(libs.androidx.media3.container)
     implementation(libs.androidx.media3.effect)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)

@@ -59,9 +59,16 @@ private class LinearDeinterlaceShaderProgram(
         inputTexId: Int,
         presentationTimeUs: Long,
     ) {
+        // The transcoder records every frame it emits, so a queue that was never fed means this
+        // stream is not transcoded (TLV/HEVC); render those frames untouched instead of blending
+        // progressive pictures as interlaced.
         val info =
             metadataQueue.take(presentationTimeUs)
-                ?: DeinterlaceFrameInfo.InterlacedTopFieldFirst
+                ?: if (metadataQueue.everRecorded) {
+                    DeinterlaceFrameInfo.InterlacedTopFieldFirst
+                } else {
+                    DeinterlaceFrameInfo.Progressive
+                }
         try {
             glProgram.use()
             glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)

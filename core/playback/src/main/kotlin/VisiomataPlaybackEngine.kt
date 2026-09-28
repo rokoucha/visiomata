@@ -10,11 +10,13 @@ import android.util.Base64
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.TimestampAdjuster
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -31,6 +33,7 @@ import net.rokoucha.visiomata.playback.bml.BmlTsDemuxer
 import net.rokoucha.visiomata.playback.bml.MahironBmlMessageSource
 import net.rokoucha.visiomata.playback.media3.AribTsPayloadReaderFactory
 import net.rokoucha.visiomata.playback.media3.RelayingDataSourceFactory
+import net.rokoucha.visiomata.playback.media3.TlvMmtExtractor
 import net.rokoucha.visiomata.playback.media3.TsStreamRelay
 import net.rokoucha.visiomata.playback.media3.VisiomataSubtitleParserFactory
 import net.rokoucha.visiomata.playback.mpeg2toh264.DeinterlaceMetadataQueue
@@ -72,6 +75,8 @@ internal class VisiomataPlaybackEngine(
     private var retryAttempt = 0
     private var retryScheduled = false
     private val decoderRetryPolicy = DecoderRetryPolicy()
+    private var decoderSupportAbort: String? = null
+    private val decoderSupportAbortListeners = mutableSetOf<(String) -> Unit>()
     private var mediaSession: MediaSession? = null
     internal val audioComponentState = AudioComponentState(initialAudioComponents)
 
@@ -173,6 +178,7 @@ internal class VisiomataPlaybackEngine(
             onBeforeReconnect()
             retryAttempt = 0
             decoderRetryPolicy.reset()
+            decoderSupportAbort = null
             // Reset while acquisition is still inactive so Mahiron does not briefly open a stale
             // connection immediately before the fresh live connection.
             bmlMessageSource?.reset()
@@ -206,6 +212,7 @@ internal class VisiomataPlaybackEngine(
         retryScheduled = false
         retryAttempt = 0
         decoderRetryPolicy.reset()
+        decoderSupportAbort = null
         onBeforeReconnect()
         reconnectInternal()
         return true
@@ -226,6 +233,7 @@ internal class VisiomataPlaybackEngine(
         bmlMessageSource?.release()
         deinterlaceMetadata?.clear()
         audioComponentState.release()
+        decoderSupportAbortListeners.clear()
     }
 
     fun updateAudioComponents(components: List<BroadcastAudioComponent>): Boolean =
@@ -234,6 +242,14 @@ internal class VisiomataPlaybackEngine(
     fun addAudioStateListener(listener: () -> Unit) = audioComponentState.addListener(listener)
 
     fun removeAudioStateListener(listener: () -> Unit) = audioComponentState.removeListener(listener)
+
+    fun addDecoderSupportAbortListener(listener: (String) -> Unit) {
+        decoderSupportAbortListeners.add(listener)
+    }
+
+    fun removeDecoderSupportAbortListener(listener: (String) -> Unit) {
+        decoderSupportAbortListeners.remove(listener)
+    }
 
     fun isReleased(): Boolean = released.get()
 
@@ -267,8 +283,26 @@ internal class VisiomataPlaybackEngine(
         scheduleStats()
     }
 
+    private fun checkDecoderSupport(format: Format) {
+        if (!streaming || released.get() || decoderSupportAbort != null) return
+        if (DecoderSupport.isSupported(applicationContext, format)) return
+        val message = DecoderSupport.unsupportedMessage()
+        Log.w("VisiomataPlayer", "Aborting playback; no decoder supports $format")
+        decoderSupportAbort = message
+        retryHandler.removeCallbacks(retryPlayback)
+        retryScheduled = false
+        bmlMessageSource?.stop()
+        player.stop()
+        decoderSupportAbortListeners.forEach { it(message) }
+    }
+
     private fun scheduleRetry(error: PlaybackException? = null) {
-        if (!streaming || released.get() || retryScheduled || decoderRetryPolicy.gaveUp) return
+        if (
+            !streaming || released.get() || retryScheduled || decoderRetryPolicy.gaveUp ||
+            decoderSupportAbort != null
+        ) {
+            return
+        }
         if (error != null && isDecoderErrorCode(error.errorCode)) {
             if (decoderRetryPolicy.onDecoderError()) {
                 bmlMessageSource?.stop()
@@ -349,6 +383,23 @@ internal class VisiomataPlaybackEngine(
                     ) {
                         Log.w("VisiomataPlayer", "Dropped $droppedFrames video frames in ${elapsedMs}ms")
                     }
+
+                    override fun onVideoInputFormatChanged(
+                        eventTime: AnalyticsListener.EventTime,
+                        format: Format,
+                        decoderReuseEvaluation: DecoderReuseEvaluation?,
+                    ) {
+                        // The callback thread is not the player thread contract; hop to main.
+                        retryHandler.post { checkDecoderSupport(format) }
+                    }
+
+                    override fun onAudioInputFormatChanged(
+                        eventTime: AnalyticsListener.EventTime,
+                        format: Format,
+                        decoderReuseEvaluation: DecoderReuseEvaluation?,
+                    ) {
+                        retryHandler.post { checkDecoderSupport(format) }
+                    }
                 },
             )
             setAudioAttributes(AudioAttributes.DEFAULT, true)
@@ -357,7 +408,9 @@ internal class VisiomataPlaybackEngine(
             trackSelectionParameters =
                 trackSelectionParameters
                     .buildUpon()
-                    .setPreferredVideoMimeTypes(MimeTypes.VIDEO_MPEG2)
+                    // MPEG-2 stays first so TS streams select exactly what they did before;
+                    // the HEVC entry only gives TLV streams a preferred video MIME type.
+                    .setPreferredVideoMimeTypes(MimeTypes.VIDEO_MPEG2, MimeTypes.VIDEO_H265)
                     .setPreferredTextLanguage("jpn")
                     .setSelectUndeterminedTextLanguage(true)
                     .build()
@@ -375,7 +428,12 @@ internal class VisiomataPlaybackEngine(
     private fun createExtractorsFactory(subtitleParserFactory: VisiomataSubtitleParserFactory): ExtractorsFactory =
         ExtractorsFactory {
             val streamGeneration = audioComponentState.beginStream()
+            // BundledExtractorsAdapter sniffs the candidates in order and keeps the first match
+            // (it skips sniffing entirely for a single extractor, so both must be listed here).
+            // The TLV sniff requires chained packets, which random TS bytes cannot frame, so TS
+            // streams still fall through to TsExtractor exactly as before.
             arrayOf<Extractor>(
+                TlvMmtExtractor(),
                 TsExtractor(
                     TsExtractor.MODE_SINGLE_PMT,
                     0,

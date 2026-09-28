@@ -1,7 +1,9 @@
 package net.rokoucha.visiomata.playback.mpeg2toh264
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DeinterlaceMetadataQueueTest {
@@ -50,5 +52,27 @@ class DeinterlaceMetadataQueueTest {
         queue.clear()
 
         assertNull(queue.take(1_000))
+    }
+
+    @Test
+    fun everRecordedLatchesOnFirstRecord() {
+        val queue = DeinterlaceMetadataQueue()
+
+        assertFalse(queue.everRecorded)
+
+        queue.record(1_000, DeinterlaceFrameInfo.InterlacedTopFieldFirst)
+
+        assertTrue(queue.everRecorded)
+    }
+
+    @Test
+    fun clearPreservesEverRecorded() {
+        val queue = DeinterlaceMetadataQueue()
+        queue.record(1_000, DeinterlaceFrameInfo.InterlacedTopFieldFirst)
+
+        queue.clear()
+        queue.take(1_000)
+
+        assertTrue(queue.everRecorded)
     }
 }

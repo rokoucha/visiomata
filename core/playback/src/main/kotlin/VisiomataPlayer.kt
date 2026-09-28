@@ -450,6 +450,12 @@ fun VisiomataPlayer(
             }
         }
         val audioStateListener = ::invalidateAudioTracks
+        val decoderSupportAbortListener: (String) -> Unit = { message ->
+            if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                resetBmlViewForNewStream()
+                currentOnPlaybackErrorChanged(message)
+            }
+        }
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {
@@ -471,6 +477,7 @@ fun VisiomataPlayer(
             }
         player.addListener(listener)
         engine.addAudioStateListener(audioStateListener)
+        engine.addDecoderSupportAbortListener(decoderSupportAbortListener)
         currentOnAudioTracksChanged(player.currentTracks.audioTrackOptions(engine.audioComponentState))
         currentOnIsPlayingChanged(player.isPlaying)
         if (player.playbackState == Player.STATE_READY) recordReadyMemory()
@@ -484,6 +491,7 @@ fun VisiomataPlayer(
             lifecycleOwner.lifecycle.removeObserver(observer)
             player.removeListener(listener)
             engine.removeAudioStateListener(audioStateListener)
+            engine.removeDecoderSupportAbortListener(decoderSupportAbortListener)
             bmlWebView?.setActive(false)
             engine.release()
             currentOnBmlInputStateChanged(false, false, emptySet())
