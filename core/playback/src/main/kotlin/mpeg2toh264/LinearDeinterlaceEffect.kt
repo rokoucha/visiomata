@@ -60,8 +60,8 @@ private class LinearDeinterlaceShaderProgram(
         presentationTimeUs: Long,
     ) {
         // The transcoder records every frame it emits, so a queue that was never fed means this
-        // stream is not transcoded (TLV/HEVC); render those frames untouched instead of blending
-        // progressive pictures as interlaced.
+        // TS stream is not transcoded (native AVC); render those frames untouched instead of
+        // blending progressive pictures as interlaced. TLV/HEVC never reaches this effect.
         val info =
             metadataQueue.take(presentationTimeUs)
                 ?: if (metadataQueue.everRecorded) {

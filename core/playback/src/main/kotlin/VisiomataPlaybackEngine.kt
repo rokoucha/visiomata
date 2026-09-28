@@ -89,6 +89,7 @@ internal class VisiomataPlaybackEngine(
         deinterlaceMetadata
             ?.takeIf { config.deinterlaceEnabled }
             ?.let(::LinearDeinterlaceEffect)
+    private val effectsGate = DeinterlaceEffectsGate(deinterlaceEffect != null)
 
     val player: ExoPlayer = createPlayer()
     private val sessionPlayer = LiveBroadcastPlayer(player)
@@ -277,6 +278,28 @@ internal class VisiomataPlaybackEngine(
         }
     }
 
+    private fun onStreamKindSniffed(kind: StreamKind) {
+        // Sniffing runs on the loader thread.
+        retryHandler.post {
+            if (!streaming || released.get()) return@post
+            // A pending retry reconnects anyway; its fresh extractors sniff and report again.
+            if (retryScheduled || decoderRetryPolicy.gaveUp || decoderSupportAbort != null) return@post
+            if (!effectsGate.onSniffed(kind)) return@post
+            Log.i("VisiomataPlayer", "MPEG-2 TS stream detected; restarting with deinterlace effects")
+            restartWithVideoEffects()
+        }
+    }
+
+    private fun restartWithVideoEffects() {
+        if (!streaming || released.get()) return
+        val effect = deinterlaceEffect ?: return
+        // stop() resets the renderers so the effects land before the next prepare() and the GL
+        // pipeline is built; setMediaItem alone would keep the effect-free renderer.
+        player.stop()
+        player.setVideoEffects(listOf(effect))
+        reconnectInternal()
+    }
+
     private fun startStats() {
         lastStatsBytes = tsStreamRelay.totalBytesPublished
         lastStatsTimeMs = SystemClock.elapsedRealtime()
@@ -404,7 +427,9 @@ internal class VisiomataPlaybackEngine(
             )
             setAudioAttributes(AudioAttributes.DEFAULT, true)
             setHandleAudioBecomingNoisy(true)
-            if (deinterlaceEffect != null) setVideoEffects(listOf(deinterlaceEffect))
+            // Video effects stay unset until sniffing proves a TS stream (see
+            // onStreamKindSniffed): the GL pipeline is then built by the restart, while TLV/HEVC
+            // keeps the direct output path.
             trackSelectionParameters =
                 trackSelectionParameters
                     .buildUpon()
@@ -433,20 +458,24 @@ internal class VisiomataPlaybackEngine(
             // The TLV sniff requires chained packets, which random TS bytes cannot frame, so TS
             // streams still fall through to TsExtractor exactly as before.
             arrayOf<Extractor>(
-                TlvMmtExtractor(),
-                TsExtractor(
-                    TsExtractor.MODE_SINGLE_PMT,
-                    0,
-                    subtitleParserFactory,
-                    TimestampAdjuster(0),
-                    AribTsPayloadReaderFactory(
-                        transcodeMpeg2Video = config.transcodeMpeg2Video,
-                        deinterlaceMetadata = deinterlaceMetadata,
-                        bmlDemuxer = bmlTsDemuxer,
-                        audioComponentState = audioComponentState,
-                        streamGeneration = streamGeneration,
+                SniffReportingExtractor(TlvMmtExtractor(), StreamKind.TLV, ::onStreamKindSniffed),
+                SniffReportingExtractor(
+                    TsExtractor(
+                        TsExtractor.MODE_SINGLE_PMT,
+                        0,
+                        subtitleParserFactory,
+                        TimestampAdjuster(0),
+                        AribTsPayloadReaderFactory(
+                            transcodeMpeg2Video = config.transcodeMpeg2Video,
+                            deinterlaceMetadata = deinterlaceMetadata,
+                            bmlDemuxer = bmlTsDemuxer,
+                            audioComponentState = audioComponentState,
+                            streamGeneration = streamGeneration,
+                        ),
+                        TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES,
                     ),
-                    TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES,
+                    StreamKind.TS,
+                    ::onStreamKindSniffed,
                 ),
             )
         }
