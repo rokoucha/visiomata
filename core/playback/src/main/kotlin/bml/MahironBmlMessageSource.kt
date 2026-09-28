@@ -136,7 +136,7 @@ internal class MahironBmlMessageSource(
 
     private fun start(expectedGeneration: Int) {
         enqueue(
-            "services/$serviceId/data-broadcast/state?allowCache=1",
+            "services/$serviceId/data-broadcast/bml/state?allowCache=1",
             object : Callback {
                 override fun onFailure(
                     call: Call,
@@ -180,7 +180,7 @@ internal class MahironBmlMessageSource(
     /** The generated client models SSE as String, so stream it directly to avoid unbounded buffering. */
     private fun openEvents(expectedGeneration: Int) {
         enqueue(
-            "services/$serviceId/data-broadcast/events",
+            "services/$serviceId/data-broadcast/bml/events",
             object : Callback {
                 override fun onFailure(
                     call: Call,
@@ -401,7 +401,7 @@ internal class MahironBmlMessageSource(
         Trace.beginSection("Mahiron BML module")
         try {
             val base =
-                "services/$serviceId/data-broadcast/components/${key.componentTag}/carousels/${key.downloadId}" +
+                "services/$serviceId/data-broadcast/bml/components/${key.componentTag}/carousels/${key.downloadId}" +
                     "/modules/${key.moduleId}/versions/${key.version}"
             val resources = executeJson(base, expectedGeneration).getJSONArray("resources")
             val files = JSONArray()
