@@ -31,7 +31,7 @@ nav3Core = "1.1.7"
 okhttp = "5.5.0"
 opentelemetryBuild = "4.8.0"
 room = "2.8.5"
-spotless = "8.10.2"
+spotless = "8.10.3"
 tvMaterial = "1.1.0"
 
 [libraries]
