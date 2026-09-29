@@ -439,7 +439,6 @@ class ProgramGuideRepository(
                 dao.promote(staging, source, System.currentTimeMillis())
             } finally {
                 withContext(NonCancellable) {
-                    awaitPlaybackIdle()
                     dao.deleteServices(staging)
                     dao.deletePrograms(staging)
                 }

@@ -13,7 +13,9 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Upsert
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 
 @Entity(
     tableName = "services",
@@ -289,13 +291,32 @@ internal abstract class GuideDatabase : RoomDatabase() {
 
         fun get(context: Context): GuideDatabase =
             instance ?: synchronized(this) {
-                instance ?: Room
-                    .databaseBuilder(
-                        context.applicationContext,
-                        GuideDatabase::class.java,
-                        "visiomata.db",
-                    ).build()
-                    .also { instance = it }
+                instance ?: run {
+                    val appContext = context.applicationContext
+                    // The old database only held downloadable guide data.
+                    appContext.deleteDatabase("visiomata.db")
+                    Room
+                        .databaseBuilder(
+                            appContext,
+                            GuideDatabase::class.java,
+                            File(appContext.cacheDir, "visiomata.db").absolutePath,
+                        ).fallbackToDestructiveMigration(true)
+                        .addCallback(
+                            object : Callback() {
+                                override fun onOpen(db: SupportSQLiteDatabase) {
+                                    // Process death skips the full-refresh cleanup block.
+                                    db.execSQL(
+                                        "DELETE FROM services WHERE source LIKE '%#%' " +
+                                            "AND source NOT IN (SELECT source FROM guide_cache)",
+                                    )
+                                    db.execSQL(
+                                        "DELETE FROM programs WHERE source LIKE '%#%' " +
+                                            "AND source NOT IN (SELECT source FROM guide_cache)",
+                                    )
+                                }
+                            },
+                        ).build().also { instance = it }
+                }
             }
     }
 }
