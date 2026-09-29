@@ -496,7 +496,8 @@ private fun TvLicenseDetail(
                 enabled = pageIndex < pages.lastIndex,
                 onClick = { pageIndex++ },
                 colors = tvClickableSurfaceColors(),
-                modifier = Modifier.returnFocusTo(categoryFocusRequester),
+                // No left override: spatial navigation moves left to the previous-page button.
+                modifier = Modifier,
             ) {
                 Text("次へ", modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp))
             }
@@ -765,14 +766,19 @@ private fun TvMirakurunSettings(
     CategoryLabel("認証")
     Spacer(Modifier.height(12.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        AuthenticationType.entries.forEach { type ->
+        AuthenticationType.entries.forEachIndexed { index, type ->
             Surface(
                 selected = draft.authenticationType == type,
                 onClick = {
                     draft = draft.copy(authenticationType = type)
                     save()
                 },
-                modifier = Modifier.weight(1f).returnFocusTo(categoryFocusRequester),
+                // Only the leftmost item returns to the category list;
+                // the others move left to their sibling via spatial navigation.
+                modifier =
+                    Modifier.weight(1f).then(
+                        if (index == 0) Modifier.returnFocusTo(categoryFocusRequester) else Modifier,
+                    ),
                 colors = tvSelectableSurfaceColors(),
             ) {
                 Text(
@@ -888,7 +894,8 @@ private fun TvMirakurunSettings(
                 save()
                 onRefreshGuide(value)
             },
-            modifier = Modifier.weight(1f).returnFocusTo(categoryFocusRequester),
+            // No left override: spatial navigation moves left to the sibling button.
+            modifier = Modifier.weight(1f),
             colors = tvClickableSurfaceColors(),
         ) {
             Text(
