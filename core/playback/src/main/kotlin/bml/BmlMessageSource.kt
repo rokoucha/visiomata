@@ -13,6 +13,8 @@ internal interface BmlMessageSource {
 
     fun setConsumer(consumer: ((String) -> Unit)?)
 
+    fun setOnContentAvailable(listener: (() -> Unit)?)
+
     fun reset()
 
     fun release()

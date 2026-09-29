@@ -302,7 +302,7 @@ private fun ServiceIdentity(
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
-                modifier = if (focused) Modifier.basicMarquee() else Modifier,
+                modifier = if (focused) Modifier.basicMarquee(iterations = 2) else Modifier,
             )
             ChannelIdentity(choice.channelType.value, choice.logicalChannelNumber)
         }
@@ -736,7 +736,7 @@ private fun TvCurrentProgram(
             maxLines = 1,
             softWrap = false,
             overflow = TextOverflow.Ellipsis,
-            modifier = if (focused) Modifier.basicMarquee() else Modifier,
+            modifier = if (focused) Modifier.basicMarquee(iterations = 2) else Modifier,
         )
         TvProgramProgress(program)
     }

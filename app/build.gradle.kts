@@ -38,6 +38,12 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             resValue("string", "app_name", "Visiomata Dev")
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+                "proguard-debug.pro",
+            )
         }
         release {
             signingConfig = signingConfigs.findByName("release")

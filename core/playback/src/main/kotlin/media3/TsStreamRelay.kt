@@ -10,6 +10,8 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
 import net.rokoucha.visiomata.playback.bml.BmlTsDemuxer
+import java.io.IOException
+import java.io.InterruptedIOException
 import java.util.concurrent.atomic.AtomicLong
 
 internal class TsStreamRelay(
@@ -244,21 +246,44 @@ internal class PsiSectionAssembler {
 internal class RelayingDataSourceFactory(
     private val upstreamFactory: DataSource.Factory,
     private val relay: TsStreamRelay,
+    private val readAheadBytes: Int,
 ) : DataSource.Factory {
-    override fun createDataSource(): DataSource = RelayingDataSource(upstreamFactory.createDataSource(), relay)
+    override fun createDataSource(): DataSource = RelayingDataSource(upstreamFactory.createDataSource(), relay, readAheadBytes)
 }
 
 @UnstableApi
 private class RelayingDataSource(
     private val upstream: DataSource,
     private val relay: TsStreamRelay,
+    readAheadBytes: Int,
 ) : DataSource {
+    private val lock = Object()
+    private val readAhead = ByteArray(readAheadBytes)
+    private var head = 0
+    private var size = 0
+    private var finished = false
+    private var closed = false
+    private var failure: IOException? = null
+    private var reader: Thread? = null
+
     override fun addTransferListener(transferListener: TransferListener) =
         upstream.addTransferListener(transferListener)
 
     override fun open(dataSpec: DataSpec): Long {
         relay.reset()
-        return upstream.open(dataSpec)
+        val length = upstream.open(dataSpec)
+        synchronized(lock) {
+            head = 0
+            size = 0
+            finished = false
+            closed = false
+            failure = null
+        }
+        reader = Thread(::readAheadLoop, "VisiomataStreamReader").apply {
+            isDaemon = true
+            start()
+        }
+        return length
     }
 
     override fun read(
@@ -266,9 +291,64 @@ private class RelayingDataSource(
         offset: Int,
         length: Int,
     ): Int {
-        val bytesRead = upstream.read(buffer, offset, length)
+        if (length == 0) return 0
+        val bytesRead =
+            try {
+                synchronized(lock) {
+                    while (size == 0 && !finished && !closed) lock.wait()
+                    if (size == 0) {
+                        failure?.let { throw it }
+                        return -1
+                    }
+                    val count = minOf(length, size, readAhead.size - head)
+                    readAhead.copyInto(buffer, offset, head, head + count)
+                    head = (head + count) % readAhead.size
+                    size -= count
+                    lock.notifyAll()
+                    count
+                }
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw InterruptedIOException("Stream read interrupted").apply { initCause(error) }
+            }
         if (bytesRead > 0) relay.publish(buffer, offset, bytesRead)
         return bytesRead
+    }
+
+    private fun readAheadLoop() {
+        val chunk = ByteArray(32 * 1024)
+        try {
+            while (true) {
+                synchronized(lock) {
+                    while (size == readAhead.size && !closed) lock.wait()
+                    if (closed) return
+                }
+                val count = upstream.read(chunk, 0, chunk.size)
+                if (count == -1) break
+                var offset = 0
+                while (offset < count) {
+                    synchronized(lock) {
+                        while (size == readAhead.size && !closed) lock.wait()
+                        if (closed) return
+                        val tail = (head + size) % readAhead.size
+                        val copied = minOf(count - offset, readAhead.size - size, readAhead.size - tail)
+                        chunk.copyInto(readAhead, tail, offset, offset + copied)
+                        size += copied
+                        offset += copied
+                        lock.notifyAll()
+                    }
+                }
+            }
+        } catch (_: InterruptedException) {
+            // close() interrupts a reader waiting for buffer space.
+        } catch (error: Exception) {
+            synchronized(lock) { if (!closed) failure = error as? IOException ?: IOException(error) }
+        } finally {
+            synchronized(lock) {
+                finished = true
+                lock.notifyAll()
+            }
+        }
     }
 
     override fun getUri() = upstream.uri
@@ -276,9 +356,20 @@ private class RelayingDataSource(
     override fun getResponseHeaders(): Map<String, List<String>> = upstream.responseHeaders
 
     override fun close() {
+        synchronized(lock) {
+            closed = true
+            lock.notifyAll()
+        }
         try {
             upstream.close()
         } finally {
+            reader?.interrupt()
+            try {
+                reader?.join(1_000)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            reader = null
             relay.invalidate()
         }
     }

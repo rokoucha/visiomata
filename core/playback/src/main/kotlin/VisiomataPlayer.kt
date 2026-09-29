@@ -552,54 +552,55 @@ fun VisiomataPlayer(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                             ),
                         )
-                        // Creating Chromium synchronously here makes it part of Compose's first
-                        // applyChanges pass. Give the video host one frame first, then attach the BML plane.
-                        // The demuxer keeps completed messages queued until setConsumer() is called.
-                        postOnAnimation {
-                            if (!isAttachedToWindow || bmlWebView != null || bmlMessageSource == null) {
-                                return@postOnAnimation
-                            }
-                            Trace.beginSection("BML deferred WebView init")
-                            try {
-                                val webView =
-                                    createBmlWebView(
-                                        context = viewContext,
-                                        messageSource = bmlMessageSource,
-                                        postalCode = postalCode,
-                                        internetAccessEnabled = dataBroadcastingInternetEnabled,
-                                        acceptsKeyFocus = !preferComposeKeyInput,
-                                        lowMemoryMode = memoryPolicy.isLowRamDevice,
-                                        onBmlInvisibleChanged = { bmlInvisible = it },
-                                        onBmlUsedKeyGroupsChanged = {
-                                            bmlDocumentLoaded = true
-                                            bmlUsedKeyGroups = it
-                                        },
-                                        onBmlVideoRectChanged = { left, top, width, height ->
-                                            val next =
-                                                with(density) {
-                                                    VideoRectPx(
-                                                        left = left.dp.roundToPx(),
-                                                        top = top.dp.roundToPx(),
-                                                        width = width.dp.roundToPx(),
-                                                        height = height.dp.roundToPx(),
-                                                    )
-                                                }
-                                            if (bmlVideoRect != next) bmlVideoRect = next
-                                        },
+                        // Create Chromium only after the stream announces BML content. Both sources
+                        // retain messages until the page attaches its consumer.
+                        bmlMessageSource?.setOnContentAvailable {
+                            post {
+                                if (!isAttachedToWindow || bmlWebView != null) {
+                                    return@post
+                                }
+                                Trace.beginSection("BML deferred WebView init")
+                                try {
+                                    val webView =
+                                        createBmlWebView(
+                                            context = viewContext,
+                                            messageSource = bmlMessageSource,
+                                            postalCode = postalCode,
+                                            internetAccessEnabled = dataBroadcastingInternetEnabled,
+                                            acceptsKeyFocus = !preferComposeKeyInput,
+                                            lowMemoryMode = memoryPolicy.isLowRamDevice,
+                                            onBmlInvisibleChanged = { bmlInvisible = it },
+                                            onBmlUsedKeyGroupsChanged = {
+                                                bmlDocumentLoaded = true
+                                                bmlUsedKeyGroups = it
+                                            },
+                                            onBmlVideoRectChanged = { left, top, width, height ->
+                                                val next =
+                                                    with(density) {
+                                                        VideoRectPx(
+                                                            left = left.dp.roundToPx(),
+                                                            top = top.dp.roundToPx(),
+                                                            width = width.dp.roundToPx(),
+                                                            height = height.dp.roundToPx(),
+                                                        )
+                                                    }
+                                                if (bmlVideoRect != next) bmlVideoRect = next
+                                            },
+                                        )
+                                    addView(
+                                        webView,
+                                        FrameLayout.LayoutParams(
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                            ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ),
                                     )
-                                addView(
-                                    webView,
-                                    FrameLayout.LayoutParams(
-                                        ViewGroup.LayoutParams.MATCH_PARENT,
-                                        ViewGroup.LayoutParams.MATCH_PARENT,
-                                    ),
-                                )
-                                bmlWebView = webView
-                                webView.setActive(
-                                    lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
-                                )
-                            } finally {
-                                Trace.endSection()
+                                    bmlWebView = webView
+                                    webView.setActive(
+                                        lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+                                    )
+                                } finally {
+                                    Trace.endSection()
+                                }
                             }
                         }
                     }
@@ -640,6 +641,7 @@ fun VisiomataPlayer(
                     }
                 },
                 onRelease = { host ->
+                    bmlMessageSource?.setOnContentAvailable(null)
                     // AndroidView exclusively owns and releases both view instances. The engine's
                     // independent release path remains safe whichever disposal callback runs first.
                     val videoHost = host.getChildAt(0) as? FrameLayout

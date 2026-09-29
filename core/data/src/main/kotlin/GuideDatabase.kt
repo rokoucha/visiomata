@@ -106,23 +106,20 @@ internal interface GuideDao {
 
     @Query(
         """
-        SELECT cacheId, source, id, eventId, networkId, transportStreamId, serviceId,
-            title, description, startAt, duration, genreLevel1, genreLevel2, extendedJson,
-            relatedItemsJson, audiosJson
-        FROM (
-            SELECT programs.*,
-                ROW_NUMBER() OVER (
-                    PARTITION BY source, networkId, serviceId
-                    ORDER BY startAt, id
-                ) AS homeRank
-            FROM programs
-            WHERE source = :source AND startAt + duration > :now
+        SELECT programs.* FROM services
+        INNER JOIN programs ON programs.cacheId IN (
+            SELECT candidate.cacheId FROM programs AS candidate
+            WHERE candidate.source = services.source
+                AND candidate.networkId = services.networkId
+                AND candidate.serviceId = services.serviceId
+                AND candidate.startAt + candidate.duration > :now
+            ORDER BY candidate.startAt, candidate.id
+            LIMIT 2
         )
-        WHERE homeRank <= 2
-        ORDER BY startAt
+        WHERE services.source = :source
+        ORDER BY programs.startAt
     """,
     )
-    @Transaction
     fun observeHomePrograms(
         source: String,
         now: Long,

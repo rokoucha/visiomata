@@ -127,6 +127,8 @@ internal class BmlTsDemuxer(
     private var networkId: Int? = null
 
     @Volatile private var consumer: ((String) -> Unit)? = null
+    @Volatile private var onContentAvailable: (() -> Unit)? = null
+    @Volatile private var contentAvailable = false
     private val waitingMessages = ArrayDeque<PendingMessage>()
     private val moduleWorks = ArrayDeque<ModuleWork>()
     private val batchBuilder = StringBuilder(initialBatchCapacity)
@@ -266,6 +268,11 @@ internal class BmlTsDemuxer(
         if (consumer != null && active.get()) worker.execute(::flushMessagesSafely)
     }
 
+    override fun setOnContentAvailable(listener: (() -> Unit)?) {
+        onContentAvailable = listener
+        if (listener != null && contentAvailable) listener()
+    }
+
     fun updateProgramIds(
         originalNetworkId: Int?,
         transportStreamId: Int?,
@@ -310,6 +317,7 @@ internal class BmlTsDemuxer(
     }
 
     private fun resetOnWorker() {
+        contentAvailable = false
         components.clear()
         modules.clear()
         transactions.clear()
@@ -326,6 +334,7 @@ internal class BmlTsDemuxer(
     override fun release() {
         active.set(false)
         consumer = null
+        onContentAvailable = null
         worker.shutdownNow()
         moduleWorks.forEach { it.inflater?.end() }
         moduleWorks.clear()
@@ -1187,6 +1196,15 @@ internal class BmlTsDemuxer(
     private fun emit(message: JSONObject) {
         if (!active.get()) return
         enqueueMessage(PendingMessage(message.toString()))
+        if (!contentAvailable && (
+                message.optString("type") == "moduleDownloaded" ||
+                    (message.optString("type") == "moduleListUpdated" &&
+                        (message.optJSONArray("modules")?.length() ?: 0) > 0)
+            )
+        ) {
+            contentAvailable = true
+            onContentAvailable?.invoke()
+        }
     }
 
     private fun enqueueMessage(message: PendingMessage) {

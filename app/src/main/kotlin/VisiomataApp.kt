@@ -220,6 +220,9 @@ private fun HandheldVisiomataApp(
     GuideEventSync(settings, guideUseCases, maintenance.eventReconnectGeneration)
     var selectedServiceId by rememberSaveable { mutableLongStateOf(TEST_SERVICE_ID) }
     val currentRoute = backStack.lastOrNull()
+    LaunchedEffect(currentRoute) {
+        guideUseCases.setPlaybackActive(currentRoute == PlayerRoute)
+    }
     val selectedDestination =
         when (currentRoute) {
             SettingsRoute, MirakurunSettingsRoute, DataBroadcastingSettingsRoute,
@@ -296,6 +299,7 @@ private fun HandheldVisiomataApp(
                                 settings = settings,
                                 guideUseCases = guideUseCases,
                                 onPlay = { serviceId ->
+                                    guideUseCases.setPlaybackActive(true)
                                     selectedServiceId = serviceId
                                     backStack.add(PlayerRoute)
                                 },
@@ -317,6 +321,7 @@ private fun HandheldVisiomataApp(
                                 guideUseCases = guideUseCases,
                                 isTv = false,
                                 onPlay = { serviceId ->
+                                    guideUseCases.setPlaybackActive(true)
                                     selectedServiceId = serviceId
                                     backStack.add(PlayerRoute)
                                 },
@@ -486,6 +491,10 @@ private fun TvVisiomataApp(
     val maintenanceScope = rememberCoroutineScope()
     GuideEventSync(settings, guideUseCases, maintenance.eventReconnectGeneration)
     var selectedServiceId by rememberSaveable { mutableLongStateOf(TEST_SERVICE_ID) }
+    val currentRoute = backStack.lastOrNull()
+    LaunchedEffect(currentRoute) {
+        guideUseCases.setPlaybackActive(currentRoute == PlayerRoute)
+    }
     NavDisplay(
         backStack = backStack,
         onBack = { backStack.popLastIfNotRoot() },
@@ -498,6 +507,7 @@ private fun TvVisiomataApp(
                             settings = settings,
                             guideUseCases = guideUseCases,
                             onPlay = { serviceId ->
+                                guideUseCases.setPlaybackActive(true)
                                 selectedServiceId = serviceId
                                 backStack.add(PlayerRoute)
                             },
@@ -540,6 +550,7 @@ private fun TvVisiomataApp(
                             guideUseCases = guideUseCases,
                             isTv = true,
                             onPlay = { serviceId ->
+                                guideUseCases.setPlaybackActive(true)
                                 selectedServiceId = serviceId
                                 backStack.add(PlayerRoute)
                             },
@@ -768,6 +779,8 @@ private fun GuideEventSync(
         reconnectGeneration,
     ) {
         try {
+            // Recent-event JSON decoding and Room writes compete with the first TV frames.
+            delay(5_000)
             guideUseCases.syncEvents(settings)
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -1190,8 +1203,7 @@ private fun ConfiguredPlayerScreen(
         value = playbackSessionUseCase(settings, serviceId)
     }
     val session = playbackSession
-    val loadedProgramInfo = programInfoState
-    if (session == null || loadedProgramInfo == null) {
+    if (session == null) {
         HomeLoadingIndicator()
         return
     }
@@ -1209,7 +1221,7 @@ private fun ConfiguredPlayerScreen(
         mahironApiRoot = session.mahironApiRoot,
         serviceId = session.serviceId,
         postalCode = session.postalCode,
-        programInfo = loadedProgramInfo.value,
+        programInfo = programInfoState?.value,
         onBack = onBack,
     )
 }

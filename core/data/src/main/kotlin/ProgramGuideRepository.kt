@@ -1,6 +1,7 @@
 package net.rokoucha.visiomata.data
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.squareup.moshi.JsonAdapter
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
@@ -17,9 +18,12 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.job
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -52,7 +56,17 @@ class ProgramGuideRepository(
     context: Context,
 ) {
     private val appContext = context.applicationContext
-    private val dao = GuideDatabase.get(appContext).guideDao()
+    private val database = GuideDatabase.get(appContext)
+    private val dao = database.guideDao()
+    private val playbackActive = MutableStateFlow(false)
+
+    fun setPlaybackActive(active: Boolean) {
+        playbackActive.value = active
+    }
+
+    private suspend fun awaitPlaybackIdle() {
+        playbackActive.first { !it }
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     fun observe(settings: MirakurunSettings): Flow<ProgramGuide> {
@@ -69,7 +83,7 @@ class ProgramGuideRepository(
                 services = services.map { it.toModel() },
                 programs = programs.map { it.toModel() },
             )
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -369,8 +383,10 @@ class ProgramGuideRepository(
                             }.awaitAll()
                             .flatten()
                     }
+                awaitPlaybackIdle()
                 if (entities.isNotEmpty()) dao.insertPrograms(entities)
             }
+        awaitPlaybackIdle()
         dao.deleteExpiredPrograms(source, now - PROGRAM_PRUNE_GRACE_MILLIS)
     }
 
@@ -400,25 +416,30 @@ class ProgramGuideRepository(
             val staging = "$source#${UUID.randomUUID()}"
             val remote = RemoteGuideSource(settings)
             try {
+                awaitPlaybackIdle()
                 val services =
                     remote.services().filter {
                         it.channel != null && it.type in selectableServiceTypes
                     }
+                awaitPlaybackIdle()
                 dao.insertServices(services.map { it.toEntity(staging) })
                 val transportStreams =
                     services.associate {
                         (it.networkId to it.serviceId) to it.transportStreamId
                     }
                 remote.forEachProgramBatch { programs ->
+                    awaitPlaybackIdle()
                     dao.insertPrograms(
                         programs.map {
                             it.toEntity(staging, transportStreams[it.networkId to it.serviceId])
                         },
                     )
                 }
+                awaitPlaybackIdle()
                 dao.promote(staging, source, System.currentTimeMillis())
             } finally {
                 withContext(NonCancellable) {
+                    awaitPlaybackIdle()
                     dao.deleteServices(staging)
                     dao.deletePrograms(staging)
                 }
@@ -467,22 +488,30 @@ class ProgramGuideRepository(
             refresh(settings, force = true)
             return
         }
-        events
-            .asSequence()
-            .filter { lastEventAt == null || it.time >= lastEventAt }
-            .forEach { applyEvent(settings, remote, it) }
+        val pending = events.filter { lastEventAt == null || it.time >= lastEventAt }
+        if (pending.isEmpty()) return
+        awaitPlaybackIdle()
+        refreshMutex.withLock {
+            database.withTransaction {
+                pending.forEach { applyEventLocked(settings, remote, it) }
+                dao.updateLastEventAt(source, pending.last().time)
+            }
+        }
     }
 
     private suspend fun applyEvent(
         settings: MirakurunSettings,
         remote: RemoteGuideSource,
         event: GuideEventDto,
-    ) = refreshMutex.withLock {
-        try {
-            applyEventLocked(settings, remote, event)
-        } finally {
-            withContext(NonCancellable) {
-                dao.updateLastEventAt(settings.cacheKey, event.time)
+    ) {
+        awaitPlaybackIdle()
+        refreshMutex.withLock {
+            try {
+                applyEventLocked(settings, remote, event)
+            } finally {
+                withContext(NonCancellable) {
+                    dao.updateLastEventAt(settings.cacheKey, event.time)
+                }
             }
         }
     }

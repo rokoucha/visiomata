@@ -21,6 +21,8 @@ class ProgramGuideUseCases(
 ) {
     private val repository = ProgramGuideRepository(context)
 
+    fun setPlaybackActive(active: Boolean) = repository.setPlaybackActive(active)
+
     fun observeHome(settings: MirakurunSettings): Flow<ProgramGuideLoadState> =
         repository.observeWithServiceRefresh(settings)
 

@@ -152,6 +152,7 @@ internal class VisiomataPlaybackEngine(
                         retryScheduled = false
                         retryAttempt = 0
                         decoderRetryPolicy.reset()
+                        if (streaming && !released.get()) bmlMessageSource?.start()
                     }
 
                     Player.STATE_ENDED -> {
@@ -183,7 +184,6 @@ internal class VisiomataPlaybackEngine(
             // Reset while acquisition is still inactive so Mahiron does not briefly open a stale
             // connection immediately before the fresh live connection.
             bmlMessageSource?.reset()
-            bmlMessageSource?.start()
             reconnectInternal(resetSource = false)
             true
         } else {
@@ -257,8 +257,11 @@ internal class VisiomataPlaybackEngine(
     private fun reconnectInternal(resetSource: Boolean = true) {
         if (!streaming || released.get()) return
         tsStreamRelay.invalidate()
-        if (resetSource) bmlMessageSource?.reset()
-        bmlMessageSource?.start()
+        if (resetSource) {
+            if (bmlMessageSource is MahironBmlMessageSource) bmlMessageSource.stop()
+            bmlMessageSource?.reset()
+        }
+        if (bmlMessageSource !is MahironBmlMessageSource) bmlMessageSource?.start()
         deinterlaceMetadata?.clear()
         // A fresh source also creates a fresh extractor and discovers the current PMT tracks.
         player.setMediaItem(liveMediaItem(config.url, config.mediaTitle, config.mediaSubtitle, config.mediaArtworkData))
@@ -369,7 +372,12 @@ internal class VisiomataPlaybackEngine(
     private fun createPlayer(): ExoPlayer {
         val subtitleParserFactory = VisiomataSubtitleParserFactory(config.aribFontFiles)
         val httpDataSourceFactory = createHttpDataSourceFactory()
-        val dataSourceFactory = RelayingDataSourceFactory(httpDataSourceFactory, tsStreamRelay)
+        val dataSourceFactory =
+            RelayingDataSourceFactory(
+                httpDataSourceFactory,
+                tsStreamRelay,
+                if (config.memoryPolicy.isLowRamDevice) 4 * 1024 * 1024 else 8 * 1024 * 1024,
+            )
         logConfiguration(config)
         val builder =
             ExoPlayer
@@ -390,8 +398,8 @@ internal class VisiomataPlaybackEngine(
                 .setBufferDurationsMs(
                     config.memoryPolicy.minBufferMs,
                     config.memoryPolicy.maxBufferMs,
-                    1_000,
-                    2_000,
+                    2_500,
+                    2_500,
                 ).setTargetBufferBytes(config.memoryPolicy.targetBufferBytes)
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build(),

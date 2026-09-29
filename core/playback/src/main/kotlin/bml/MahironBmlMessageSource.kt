@@ -36,6 +36,12 @@ internal class MahironBmlMessageSource(
         val version: Int,
     )
 
+    private data class PendingModule(
+        val key: ModuleKey,
+        val generation: Int,
+        val entryPoint: Boolean,
+    )
+
     private class ModuleTask(
         private val priority: Int,
         private val sequence: Long,
@@ -92,42 +98,50 @@ internal class MahironBmlMessageSource(
     private val calls = mutableSetOf<Call>()
 
     @Volatile private var consumer: ((String) -> Unit)? = null
-
-    @Volatile private var started = false
+    @Volatile private var onContentAvailable: (() -> Unit)? = null
+    @Volatile private var contentAvailable = false
+    private val pendingMessages = ArrayDeque<String>()
+    private val pendingModules = ArrayDeque<PendingModule>()
 
     override fun start() {
         if (released.get() || !active.compareAndSet(false, true)) return
-        if (consumer != null) {
-            started = true
-            start(generation.get())
-        }
+        start(generation.get())
     }
 
     override fun stop() {
         if (!active.compareAndSet(true, false)) return
         cancelPendingWork()
-        started = false
     }
 
     override fun setConsumer(consumer: ((String) -> Unit)?) {
-        this.consumer = consumer
-        if (consumer != null && active.get() && !started && !released.get()) {
-            started = true
-            start(generation.get())
+        val modules = synchronized(pendingMessages) {
+            this.consumer = consumer
+            if (consumer != null) {
+                while (pendingMessages.isNotEmpty()) consumer(pendingMessages.removeFirst())
+                pendingModules.toList().also { pendingModules.clear() }
+            } else {
+                emptyList()
+            }
         }
+        modules.forEach { enqueueModule(it.key, it.generation, it.entryPoint) }
+    }
+
+    override fun setOnContentAvailable(listener: (() -> Unit)?) {
+        onContentAvailable = listener
+        if (listener != null && contentAvailable) listener()
     }
 
     override fun reset() {
         if (released.get()) return
         cancelPendingWork()
-        started = active.get() && consumer != null
-        if (started) start(generation.get())
+        if (active.get()) start(generation.get())
     }
 
     override fun release() {
         if (!released.compareAndSet(false, true)) return
         active.set(false)
         consumer = null
+        onContentAvailable = null
         cancelPendingWork()
         moduleExecutor.shutdownNow()
         reconnectExecutor.shutdownNow()
@@ -376,6 +390,21 @@ internal class MahironBmlMessageSource(
         if (!synchronized(requestedModules) { requestedModules.add(key) } || released.get()) return
         val expectedGeneration = generation.get()
         val entryPoint = synchronized(entryPointComponents) { key.componentTag in entryPointComponents }
+        notifyContentAvailable()
+        synchronized(pendingMessages) {
+            if (consumer == null) {
+                pendingModules.addLast(PendingModule(key, expectedGeneration, entryPoint))
+                return
+            }
+        }
+        enqueueModule(key, expectedGeneration, entryPoint)
+    }
+
+    private fun enqueueModule(
+        key: ModuleKey,
+        expectedGeneration: Int,
+        entryPoint: Boolean,
+    ) {
         val priority =
             when {
                 entryPoint && key.moduleId == 0 -> 0
@@ -499,6 +528,11 @@ internal class MahironBmlMessageSource(
 
     private fun cancelPendingWork() {
         generation.incrementAndGet()
+        contentAvailable = false
+        synchronized(pendingMessages) {
+            pendingMessages.clear()
+            pendingModules.clear()
+        }
         synchronized(calls) {
             calls.forEach(Call::cancel)
             calls.clear()
@@ -511,7 +545,32 @@ internal class MahironBmlMessageSource(
     private fun isCurrent(expectedGeneration: Int) =
         active.get() && !released.get() && generation.get() == expectedGeneration
 
-    private fun emit(message: JSONObject) = consumer?.invoke("[$message]")
+    private fun emit(message: JSONObject) {
+        if (!active.get()) return
+        val json = "[$message]"
+        synchronized(pendingMessages) {
+            val target = consumer
+            if (target == null) {
+                if (message.optString("type") != "pcr" || contentAvailable) {
+                    if (pendingMessages.size == maxPendingMessages) pendingMessages.removeFirst()
+                    pendingMessages.addLast(json)
+                }
+            } else {
+                target(json)
+            }
+        }
+        if (message.optString("type") == "moduleListUpdated" &&
+            (message.optJSONArray("modules")?.length() ?: 0) > 0
+        ) {
+            notifyContentAvailable()
+        }
+    }
+
+    private fun notifyContentAvailable() {
+        if (contentAvailable) return
+        contentAvailable = true
+        onContentAvailable?.invoke()
+    }
 
     private fun JSONObject.putIfPresent(
         targetName: String,
@@ -528,6 +587,7 @@ internal class MahironBmlMessageSource(
         if (has(name) && !isNull(name)) optString(name) else JSONObject.NULL
 
     private companion object {
+        const val maxPendingMessages = 512
         const val reconnectDelaySeconds = 2L
         const val serviceItemIdNetworkMultiplier = 100_000L
         const val logTag = "MahironBmlSource"
