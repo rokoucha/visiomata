@@ -157,7 +157,10 @@ fun PlayerScreen(
     var errorMessage by remember(url) { mutableStateOf<String?>(null) }
     var reloadGeneration by remember(url) { mutableIntStateOf(0) }
     val portrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT && !isTv
-    LandscapeSystemBarsEffect(enabled = !portrait)
+    val tabletopSplit = rememberTabletopSplit()
+    val useTabletopLayout = shouldUseTabletopLayout(isTv, tabletopSplit)
+    LandscapeSystemBarsEffect(enabled = !portrait && !useTabletopLayout)
+    TabletopStatusBarAppearanceEffect(enabled = useTabletopLayout)
     var bmlActive by remember(url) { mutableStateOf(false) }
     var bmlContentVisible by remember(url) { mutableStateOf(false) }
     var bmlUsedKeyGroups by remember(url) { mutableStateOf(emptySet<String>()) }
@@ -201,6 +204,7 @@ fun PlayerScreen(
     Box(modifier) {
         PlayerLayout(
             portrait = portrait,
+            tabletopSplit = tabletopSplit,
             isInPictureInPictureMode = isInPictureInPictureMode,
             onEnterPictureInPicture =
                 if (pipSupported) {
@@ -300,6 +304,23 @@ private fun LandscapeSystemBarsEffect(enabled: Boolean) {
 }
 
 @Composable
+private fun TabletopStatusBarAppearanceEffect(enabled: Boolean) {
+    val view = LocalView.current
+    val activity = view.context.findActivity()
+    DisposableEffect(view, activity, enabled) {
+        if (!enabled || activity == null) return@DisposableEffect onDispose {}
+
+        // tabletopではステータスバー背景が黒帯のため、白アイコンを強制する。
+        val controller = WindowCompat.getInsetsController(activity.window, view)
+        val previousLightStatusBars = controller.isAppearanceLightStatusBars
+        controller.isAppearanceLightStatusBars = false
+        onDispose {
+            controller.isAppearanceLightStatusBars = previousLightStatusBars
+        }
+    }
+}
+
+@Composable
 private fun PlayerErrorOverlay(
     message: String,
     modifier: Modifier = Modifier,
@@ -327,6 +348,20 @@ private tailrec fun Context.findActivity(): Activity? =
         else -> null
     }
 
+/**
+ * tabletop時のステータスバー背景。
+ * ステータスバーを不透明の黒帯として描画し、映像はその下から始める。
+ */
+@Composable
+private fun TabletopStatusBarBackground(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .windowInsetsTopHeight(WindowInsets.statusBars)
+            .background(Color.Black),
+    )
+}
+
 @Composable
 private fun PlayerLayout(
     portrait: Boolean,
@@ -346,6 +381,7 @@ private fun PlayerLayout(
     onBack: () -> Unit,
     onReload: () -> Unit,
     modifier: Modifier = Modifier,
+    tabletopSplit: TabletopSplit? = null,
     tvInputMode: TvInputMode = TvInputMode.Player,
     onTvInputModeChanged: (TvInputMode) -> Unit = {},
     errorMessage: String? = null,
@@ -366,7 +402,23 @@ private fun PlayerLayout(
         }
         return
     }
-    if (portrait) {
+    // tabletop posture（半開き・ヒンジ水平）では縦画面と同じ上下分割レイアウトを使う。
+    // ステータスバーは不透明の黒帯として描画し、映像はその下から折り目の直上まで配置する。
+    val useTabletopLayout = shouldUseTabletopLayout(isTv, tabletopSplit)
+    val statusBarHeight = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val splitVideoBoxModifier =
+        if (useTabletopLayout && tabletopSplit != null) {
+            Modifier.fillMaxWidth().height((tabletopSplit.videoHeight - statusBarHeight).coerceAtLeast(0.dp))
+        } else {
+            Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+        }
+    val splitHingeGapHeight = if (useTabletopLayout) tabletopSplit?.hingeHeight ?: 0.dp else 0.dp
+    val splitRootModifier =
+        modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .then(if (useTabletopLayout) Modifier else Modifier.statusBarsPadding())
+    if (useTabletopLayout || portrait) {
         var selectedTab by rememberSaveable { mutableIntStateOf(0) }
         var overlayVisible by remember { mutableStateOf(true) }
         var interactionGeneration by remember { mutableIntStateOf(0) }
@@ -378,10 +430,11 @@ private fun PlayerLayout(
             delay(overlayTimeout)
             overlayVisible = false
         }
-        Column(
-            modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding(),
-        ) {
-            Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)) {
+        Column(splitRootModifier) {
+            if (useTabletopLayout) {
+                TabletopStatusBarBackground()
+            }
+            Box(splitVideoBoxModifier.background(Color.Black)) {
                 movablePlayer()
                 Box(
                     Modifier
@@ -443,6 +496,9 @@ private fun PlayerLayout(
                         }
                     }
                 }
+            }
+            if (splitHingeGapHeight > 0.dp) {
+                Spacer(Modifier.height(splitHingeGapHeight))
             }
             Column(Modifier.fillMaxWidth().weight(1f).navigationBarsPadding()) {
                 if (dataBroadcastingEnabled) {
@@ -1752,6 +1808,32 @@ private fun PortraitPlayerPreview() {
     MaterialTheme {
         PlayerLayout(
             portrait = true,
+            isTv = false,
+            dataBroadcastingEnabled = true,
+            bmlActive = false,
+            bmlContentVisible = false,
+            bmlUsedKeyGroups = emptySet(),
+            audioTracks = emptyList(),
+            selectedAudioTrackId = null,
+            onAudioTrackSelected = {},
+            programInfo = previewInfo,
+            overlayTimeout = 5.seconds,
+            player = { Box(Modifier.fillMaxSize().background(Color.DarkGray)) },
+            controls = { Row { Button(onClick = {}) { Text("一時停止") } } },
+            onRemoteKey = {},
+            onBack = {},
+            onReload = {},
+        )
+    }
+}
+
+@Preview(name = "Tabletop player", device = Devices.FOLDABLE, showBackground = true)
+@Composable
+private fun TabletopPlayerPreview() {
+    MaterialTheme {
+        PlayerLayout(
+            portrait = false,
+            tabletopSplit = TabletopSplit(videoHeight = 420.dp, hingeHeight = 0.dp),
             isTv = false,
             dataBroadcastingEnabled = true,
             bmlActive = false,
