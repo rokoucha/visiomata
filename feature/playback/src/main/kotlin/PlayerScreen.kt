@@ -183,6 +183,21 @@ fun PlayerScreen(
         enabled = pipSupported && isPlaying,
         hintView = pipView,
     )
+    var userFullscreen by rememberSaveable(url) { mutableStateOf(false) }
+    val enterFullscreenMode = {
+        enterFullscreen(pipActivity)
+        userFullscreen = true
+    }
+    val exitFullscreenMode = {
+        exitFullscreen(pipActivity)
+        userFullscreen = false
+    }
+    DisposableEffect(pipActivity) {
+        onDispose { exitFullscreen(pipActivity) }
+    }
+    BackHandler(enabled = userFullscreen && !isTv && !isInPictureInPictureMode) {
+        exitFullscreenMode()
+    }
     Box(modifier) {
         PlayerLayout(
             portrait = portrait,
@@ -193,6 +208,9 @@ fun PlayerScreen(
                 } else {
                     null
                 },
+            isFullscreen = userFullscreen,
+            onEnterFullscreen = enterFullscreenMode,
+            onExitFullscreen = exitFullscreenMode,
             programInfo = programInfo,
             overlayTimeout = overlayTimeout,
             controls = controls,
@@ -333,6 +351,9 @@ private fun PlayerLayout(
     errorMessage: String? = null,
     isInPictureInPictureMode: Boolean = false,
     onEnterPictureInPicture: (() -> Unit)? = null,
+    isFullscreen: Boolean = false,
+    onEnterFullscreen: (() -> Unit)? = null,
+    onExitFullscreen: (() -> Unit)? = null,
 ) {
     val currentOnTvInputModeChanged by rememberUpdatedState(onTvInputModeChanged)
     val currentPlayer by rememberUpdatedState(player)
@@ -406,6 +427,11 @@ private fun PlayerLayout(
                                 }
                                 onEnterPictureInPicture?.let { enterPip ->
                                     PlayerPipButton(onClick = enterPip)
+                                }
+                                if (shouldShowEnterFullscreen(isTv, portrait)) {
+                                    onEnterFullscreen?.let { enterFullscreen ->
+                                        PlayerFullscreenButton(onClick = enterFullscreen)
+                                    }
                                 }
                                 Spacer(Modifier.weight(1f))
                                 AudioTrackMenu(
@@ -806,6 +832,11 @@ private fun PlayerLayout(
                             )
                             onEnterPictureInPicture?.let { enterPip ->
                                 PlayerPipButton(onClick = enterPip)
+                            }
+                            if (shouldShowExitFullscreen(isTv, portrait, isFullscreen)) {
+                                onExitFullscreen?.let { exitFullscreen ->
+                                    PlayerFullscreenExitButton(onClick = exitFullscreen)
+                                }
                             }
                             if (dataBroadcastingEnabled && !remoteVisible && !isTv) {
                                 var remoteButtonFocused by remember { mutableStateOf(false) }
@@ -1484,6 +1515,76 @@ private fun PlayerPipButton(
         Icon(
             painter = painterResource(R.drawable.picture_in_picture_24),
             contentDescription = "ピクチャ イン ピクチャで表示",
+        )
+    }
+}
+
+@Composable
+private fun PlayerFullscreenButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    FilledTonalIconButton(
+        onClick = onClick,
+        modifier =
+            modifier
+                .onFocusChanged { focused = it.isFocused }
+                .then(
+                    if (focused) {
+                        Modifier.border(
+                            3.dp,
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.shapes.extraLarge,
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
+        colors =
+            IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.fullscreen_24),
+            contentDescription = "フルスクリーンで表示",
+        )
+    }
+}
+
+@Composable
+private fun PlayerFullscreenExitButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    FilledTonalIconButton(
+        onClick = onClick,
+        modifier =
+            modifier
+                .onFocusChanged { focused = it.isFocused }
+                .then(
+                    if (focused) {
+                        Modifier.border(
+                            3.dp,
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.shapes.extraLarge,
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
+        colors =
+            IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+            ),
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.fullscreen_exit_24),
+            contentDescription = "フルスクリーンを終了",
         )
     }
 }
