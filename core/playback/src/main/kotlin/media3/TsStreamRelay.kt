@@ -248,7 +248,8 @@ internal class RelayingDataSourceFactory(
     private val relay: TsStreamRelay,
     private val readAheadBytes: Int,
 ) : DataSource.Factory {
-    override fun createDataSource(): DataSource = RelayingDataSource(upstreamFactory.createDataSource(), relay, readAheadBytes)
+    override fun createDataSource(): DataSource =
+        RelayingDataSource(upstreamFactory.createDataSource(), relay, readAheadBytes)
 }
 
 @UnstableApi
@@ -279,10 +280,11 @@ private class RelayingDataSource(
             closed = false
             failure = null
         }
-        reader = Thread(::readAheadLoop, "VisiomataStreamReader").apply {
-            isDaemon = true
-            start()
-        }
+        reader =
+            Thread(::readAheadLoop, "VisiomataStreamReader").apply {
+                isDaemon = true
+                start()
+            }
         return length
     }
 

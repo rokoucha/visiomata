@@ -315,7 +315,8 @@ internal abstract class GuideDatabase : RoomDatabase() {
                                     )
                                 }
                             },
-                        ).build().also { instance = it }
+                        ).build()
+                        .also { instance = it }
                 }
             }
     }

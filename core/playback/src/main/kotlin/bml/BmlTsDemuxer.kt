@@ -127,7 +127,9 @@ internal class BmlTsDemuxer(
     private var networkId: Int? = null
 
     @Volatile private var consumer: ((String) -> Unit)? = null
+
     @Volatile private var onContentAvailable: (() -> Unit)? = null
+
     @Volatile private var contentAvailable = false
     private val waitingMessages = ArrayDeque<PendingMessage>()
     private val moduleWorks = ArrayDeque<ModuleWork>()
@@ -1198,8 +1200,10 @@ internal class BmlTsDemuxer(
         enqueueMessage(PendingMessage(message.toString()))
         if (!contentAvailable && (
                 message.optString("type") == "moduleDownloaded" ||
-                    (message.optString("type") == "moduleListUpdated" &&
-                        (message.optJSONArray("modules")?.length() ?: 0) > 0)
+                    (
+                        message.optString("type") == "moduleListUpdated" &&
+                            (message.optJSONArray("modules")?.length() ?: 0) > 0
+                    )
             )
         ) {
             contentAvailable = true

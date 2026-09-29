@@ -112,6 +112,7 @@ dependencies {
     implementation(libs.androidx.tv.material)
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.navigation3.ui)
+    implementation(libs.androidx.startup.runtime)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.kotlinx.serialization.core)

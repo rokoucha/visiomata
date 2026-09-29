@@ -98,7 +98,9 @@ internal class MahironBmlMessageSource(
     private val calls = mutableSetOf<Call>()
 
     @Volatile private var consumer: ((String) -> Unit)? = null
+
     @Volatile private var onContentAvailable: (() -> Unit)? = null
+
     @Volatile private var contentAvailable = false
     private val pendingMessages = ArrayDeque<String>()
     private val pendingModules = ArrayDeque<PendingModule>()
@@ -114,15 +116,16 @@ internal class MahironBmlMessageSource(
     }
 
     override fun setConsumer(consumer: ((String) -> Unit)?) {
-        val modules = synchronized(pendingMessages) {
-            this.consumer = consumer
-            if (consumer != null) {
-                while (pendingMessages.isNotEmpty()) consumer(pendingMessages.removeFirst())
-                pendingModules.toList().also { pendingModules.clear() }
-            } else {
-                emptyList()
+        val modules =
+            synchronized(pendingMessages) {
+                this.consumer = consumer
+                if (consumer != null) {
+                    while (pendingMessages.isNotEmpty()) consumer(pendingMessages.removeFirst())
+                    pendingModules.toList().also { pendingModules.clear() }
+                } else {
+                    emptyList()
+                }
             }
-        }
         modules.forEach { enqueueModule(it.key, it.generation, it.entryPoint) }
     }
 
