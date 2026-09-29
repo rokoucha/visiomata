@@ -459,15 +459,22 @@ private fun PlayerLayout(
                             .fillMaxSize()
                             .background(
                                 Brush.verticalGradient(
-                                    0f to Color.Black.copy(alpha = 0.72f),
-                                    0.24f to Color.Transparent,
-                                    0.45f to Color.Transparent,
-                                    1f to Color.Black.copy(alpha = 0.78f),
+                                    0f to Color.Black.copy(alpha = 0.78f),
+                                    0.18f to Color.Transparent,
+                                    0.20f to Color.Transparent,
+                                    0.52f to Color.Black.copy(alpha = 0.56f),
+                                    1f to Color.Black.copy(alpha = 0.92f),
                                 ),
                             ).padding(16.dp),
                     ) {
                         PlayerBackButton(onBack, Modifier.align(Alignment.TopStart))
                         Column(Modifier.align(Alignment.BottomStart)) {
+                            ProgramDetails(
+                                programInfo,
+                                onDarkBackground = true,
+                                compact = shouldUseCompactOverlayProgramInfo(portrait, useTabletopLayout),
+                            )
+                            Spacer(Modifier.height(8.dp))
                             controls()
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -1645,10 +1652,21 @@ private fun PlayerFullscreenExitButton(
     }
 }
 
+/**
+ * オーバーレイの番組情報をコンパクトに表示するかどうか。
+ * 縦画面の16:9映像枠は高さが足りないため、タイトル1行などの詰めた表示にする。
+ * tabletopや横画面の広い映像領域では通常表示を使う。
+ */
+internal fun shouldUseCompactOverlayProgramInfo(
+    portrait: Boolean,
+    useTabletopLayout: Boolean,
+): Boolean = portrait && !useTabletopLayout
+
 @Composable
 private fun ProgramDetails(
     info: PlayerProgramInfo?,
     onDarkBackground: Boolean = false,
+    compact: Boolean = false,
 ) {
     val primary = if (onDarkBackground) Color.White else MaterialTheme.colorScheme.onBackground
     val secondary =
@@ -1660,21 +1678,46 @@ private fun ProgramDetails(
             MaterialTheme.colorScheme.onSurfaceVariant
         }
     if (info == null) {
-        Text("番組情報を取得しています", color = secondary, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            "番組情報を取得しています",
+            color = secondary,
+            style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+        )
         return
     }
-    Column(verticalArrangement = Arrangement.spacedBy(if (onDarkBackground) 6.dp else 8.dp)) {
+    val stationStyle = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge
+    Column(
+        verticalArrangement =
+            Arrangement.spacedBy(
+                if (compact) {
+                    4.dp
+                } else if (onDarkBackground) {
+                    6.dp
+                } else {
+                    8.dp
+                },
+            ),
+    ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(if (onDarkBackground) 10.dp else 12.dp),
+            horizontalArrangement =
+                Arrangement.spacedBy(
+                    if (compact) {
+                        8.dp
+                    } else if (onDarkBackground) {
+                        10.dp
+                    } else {
+                        12.dp
+                    },
+                ),
         ) {
-            if (onDarkBackground) PlayerStationLogo(info.serviceLogo, info.serviceName)
+            if (onDarkBackground) PlayerStationLogo(info.serviceLogo, info.serviceName, compact)
             if (info.logicalChannelNumber.isNotBlank()) {
-                Text(info.serviceName, color = secondary, style = MaterialTheme.typography.labelLarge)
+                Text(info.serviceName, color = secondary, style = stationStyle)
                 Text(
                     "${info.channelType}  ${info.logicalChannelNumber}",
                     color = secondary,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = stationStyle,
                 )
             } else {
                 Text(
@@ -1682,16 +1725,23 @@ private fun ProgramDetails(
                         .filter(String::isNotBlank)
                         .joinToString("  •  "),
                     color = secondary,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = stationStyle,
                 )
             }
         }
         Text(
             info.title,
             color = primary,
-            style = if (onDarkBackground) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+            style =
+                if (compact) {
+                    MaterialTheme.typography.titleMedium
+                } else if (onDarkBackground) {
+                    MaterialTheme.typography.titleLarge
+                } else {
+                    MaterialTheme.typography.headlineSmall
+                },
             fontWeight = FontWeight.Bold,
-            maxLines = 2,
+            maxLines = if (compact) 1 else 2,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
@@ -1764,6 +1814,7 @@ private fun ProgramDetails(
 private fun PlayerStationLogo(
     logoBytes: ByteArray?,
     serviceName: String,
+    compact: Boolean = false,
 ) {
     if (logoBytes == null) return
     val bitmap =
@@ -1774,7 +1825,12 @@ private fun PlayerStationLogo(
         bitmap = bitmap.asImageBitmap(),
         contentDescription = "$serviceName ロゴ",
         contentScale = ContentScale.Fit,
-        modifier = Modifier.size(width = 64.dp, height = 38.dp),
+        modifier =
+            if (compact) {
+                Modifier.size(width = 48.dp, height = 28.dp)
+            } else {
+                Modifier.size(width = 64.dp, height = 38.dp)
+            },
     )
 }
 
