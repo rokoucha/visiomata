@@ -26,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.referentialEqualityPolicy
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -42,9 +43,11 @@ import androidx.savedstate.serialization.SavedStateConfiguration
 import com.google.firebase.appdistribution.FirebaseAppDistribution
 import com.mikepenz.aboutlibraries.Libs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.modules.polymorphic
@@ -974,7 +977,7 @@ private fun rememberHomeState(
 ): HomeState {
     val state = remember(guideUseCases, settings) { HomeState(guideUseCases, settings) }
     LaunchedEffect(state) {
-        guideUseCases.observeHome(settings).collect { loadState ->
+        guideUseCases.observeHome(settings).collectLatest { loadState ->
             state.updateGuide(loadState.guide)
             state.updateInitialLoad(loadState.isRefreshing, loadState.refreshError)
         }
@@ -990,7 +993,9 @@ private class HomeState(
     val loadLogo: suspend (Long, Int?) -> ByteArray? = { serviceId, logoId ->
         guideUseCases.logo(settings, serviceId, logoId)
     }
-    var uiState by mutableStateOf<HomeUiState>(HomeUiState.Loading)
+
+    // Equal snapshots are reused off the UI thread; publishing must not compare their lists again.
+    var uiState by mutableStateOf<HomeUiState>(HomeUiState.Loading, referentialEqualityPolicy())
     var isRefreshing by mutableStateOf(false)
         private set
     var isLoadingChannel by mutableStateOf(false)
@@ -999,12 +1004,25 @@ private class HomeState(
     private var selectedType: ChannelType? = null
     private val requestedTvTypes = mutableSetOf<ChannelType>()
 
-    private var latestGuide: net.rokoucha.visiomata.model.ProgramGuide? = null
+    private var latestGuide: ProgramGuide? = null
+    private var latestReady: HomeUiState.Ready? = null
     private var initialSnapshotDone = false
     private var initialSnapshotError: Throwable? = null
 
-    fun updateGuide(guide: net.rokoucha.visiomata.model.ProgramGuide) {
+    suspend fun updateGuide(guide: ProgramGuide) {
+        if (guide === latestGuide) return
+        val previous = latestReady
+        val ready =
+            if (guide.services.isEmpty()) {
+                null
+            } else {
+                withContext(Dispatchers.Default) {
+                    val next = homeUiStateFor(guide, snapshotDone = true, snapshotError = null) as HomeUiState.Ready
+                    if (next == previous) previous else next
+                }
+            }
         latestGuide = guide
+        latestReady = ready
         publishIfSnapshotDone()
     }
 
@@ -1053,8 +1071,14 @@ private class HomeState(
      * exists; the error surface only replaces an empty home.
      */
     private fun publishIfSnapshotDone() {
-        val next = homeUiStateFor(latestGuide, initialSnapshotDone, initialSnapshotError)
-        if (uiState != next) uiState = next
+        val next =
+            latestReady ?: if (!initialSnapshotDone) {
+                HomeUiState.Loading
+            } else {
+                initialSnapshotError?.let { HomeUiState.Error(it.message ?: "番組情報を取得できませんでした") }
+                    ?: HomeUiState.Ready(emptyList(), emptyList())
+            }
+        if (uiState !== next) uiState = next
     }
 
     suspend fun selectType(type: ChannelType) {

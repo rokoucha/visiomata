@@ -8,9 +8,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.horizontalScroll
@@ -18,7 +17,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -28,6 +26,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -43,6 +42,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -51,24 +51,29 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Devices
@@ -80,6 +85,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import net.rokoucha.visiomata.model.ChannelType
 import net.rokoucha.visiomata.model.Program
@@ -278,12 +284,11 @@ private fun HandheldServiceCard(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ServiceIdentity(
     choice: ServiceGroup,
     loadLogo: suspend (Long, Int?) -> ByteArray?,
-    focused: Boolean = false,
+    focusState: State<Boolean>? = null,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         StationLogo(
@@ -295,14 +300,11 @@ private fun ServiceIdentity(
         )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                text = choice.serviceName,
+            FocusedMarqueeText(
+                choice.serviceName,
+                focused = focusState,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Ellipsis,
-                modifier = if (focused) Modifier.basicMarquee(iterations = 2) else Modifier,
             )
             ChannelIdentity(choice.channelType.value, choice.logicalChannelNumber)
         }
@@ -343,9 +345,7 @@ private fun StationLogo(
                     } catch (_: Exception) {
                         null
                     }
-                bytes?.let {
-                    BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap()
-                }
+                bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
             }
     }
     if (bitmap != null) {
@@ -503,6 +503,23 @@ private fun SubServiceList(
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+private fun insetBringIntoViewSpec(inset: Float): BringIntoViewSpec =
+    object : BringIntoViewSpec {
+        override fun calculateScrollDistance(
+            offset: Float,
+            size: Float,
+            containerSize: Float,
+        ): Float {
+            val margin = inset.coerceAtMost(((containerSize - size) / 2).coerceAtLeast(0f))
+            return when {
+                offset < margin -> offset - margin
+                offset + size > containerSize - margin -> offset + size - containerSize + margin
+                else -> 0f
+            }
+        }
+    }
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TvHomeScreen(
     onPlay: (Long) -> Unit,
@@ -515,26 +532,28 @@ fun TvHomeScreen(
     isLoadingChannel: Boolean = false,
 ) {
     val initialCardFocusRequester = remember { FocusRequester() }
-    // Nested row prefetch can synchronously compose multiple rich TV cards while handling a
-    // D-pad event. On lower-powered TV hardware that stalls focus dispatch for hundreds of ms;
-    // compose the row only when it reaches the viewport instead.
-    val columnState =
-        rememberLazyListState(
-            prefetchStrategy = remember { LazyListPrefetchStrategy(nestedPrefetchItemCount = 0) },
-        )
     var initialCardFocusRequested by remember { mutableStateOf(false) }
     val rows =
         remember(choices, channelTypes) {
             val choicesByType = choices.groupBy { it.channelType }
-            channelTypes.map { type -> type to choicesByType[type].orEmpty() }
+            channelTypes.mapNotNull { type ->
+                choicesByType[type]?.takeIf { it.isNotEmpty() }?.let { type to it }
+            }
         }
-    val firstChoiceId = rows.firstNotNullOfOrNull { it.second.firstOrNull()?.id }
+    val rowFocusRequesters = remember(channelTypes) { channelTypes.associateWith { FocusRequester() } }
+    val guideFocusRequester = remember { FocusRequester() }
+    val verticalInset = with(LocalDensity.current) { 48.dp.toPx() }
+    val bringIntoViewSpec = remember(verticalInset) { insetBringIntoViewSpec(verticalInset) }
+    val firstChoiceId =
+        rows
+            .firstOrNull()
+            ?.second
+            ?.firstOrNull()
+            ?.id
     LaunchedEffect(firstChoiceId) {
         if (!initialCardFocusRequested && firstChoiceId != null) {
             withFrameNanos { }
-            if (initialCardFocusRequester.requestFocus()) {
-                initialCardFocusRequested = true
-            }
+            initialCardFocusRequested = initialCardFocusRequester.requestFocus()
         }
     }
     Column(
@@ -551,9 +570,15 @@ fun TvHomeScreen(
                 color = androidx.tv.material3.MaterialTheme.colorScheme.onBackground,
                 style = androidx.tv.material3.MaterialTheme.typography.displaySmall,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                Modifier.focusProperties {
+                    down = rows.firstOrNull()?.first?.let(rowFocusRequesters::getValue) ?: FocusRequester.Default
+                },
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 androidx.tv.material3.Button(
                     onClick = onGuide,
+                    modifier = Modifier.focusRequester(guideFocusRequester),
                 ) {
                     androidx.tv.material3.Text("番組表")
                 }
@@ -565,25 +590,33 @@ fun TvHomeScreen(
             }
         }
         Box(Modifier.fillMaxWidth().weight(1f)) {
-            TvPivotScroll {
-                LazyColumn(
-                    state = columnState,
-                    contentPadding = PaddingValues(bottom = 48.dp),
+            CompositionLocalProvider(LocalBringIntoViewSpec provides bringIntoViewSpec) {
+                // Keep the few broadcast-type rows alive; vertical focus must not rebuild cards.
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(bottom = 48.dp),
                     verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
-                    items(
-                        items = rows,
-                        key = { (type, _) -> type.value },
-                        contentType = { "channel-type-row" },
-                    ) { (type, typeChoices) ->
-                        TvChannelTypeRow(
-                            type = type,
-                            choices = typeChoices,
-                            onPlay = onPlay,
-                            loadLogo = loadLogo,
-                            initialCardFocusRequester = initialCardFocusRequester,
-                            isInitialRow = typeChoices.firstOrNull()?.id == firstChoiceId,
-                        )
+                    rows.forEachIndexed { index, (type, typeChoices) ->
+                        key(type) {
+                            TvChannelTypeRow(
+                                type = type,
+                                choices = typeChoices,
+                                onPlay = onPlay,
+                                loadLogo = loadLogo,
+                                rowFocusRequester = rowFocusRequesters.getValue(type),
+                                previousRow =
+                                    rows.getOrNull(index - 1)?.first?.let(rowFocusRequesters::getValue)
+                                        ?: guideFocusRequester,
+                                nextRow =
+                                    rows.getOrNull(index + 1)?.first?.let(rowFocusRequesters::getValue)
+                                        ?: FocusRequester.Cancel,
+                                initialCardFocusRequester = initialCardFocusRequester,
+                                isInitialRow = typeChoices.first().id == firstChoiceId,
+                            )
+                        }
                     }
                 }
             }
@@ -596,35 +629,22 @@ fun TvHomeScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TvPivotScroll(content: @Composable () -> Unit) {
-    val bringIntoViewSpec =
-        remember {
-            object : BringIntoViewSpec {
-                override fun calculateScrollDistance(
-                    offset: Float,
-                    size: Float,
-                    containerSize: Float,
-                ): Float {
-                    // Bias the active row slightly below center so the previous row's card edge and
-                    // the next row's heading can both remain visible on a 1080p TV.
-                    val target = containerSize * 0.58f - size * 0.5f
-                    return offset - target
-                }
-            }
-        }
-    CompositionLocalProvider(LocalBringIntoViewSpec provides bringIntoViewSpec, content = content)
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
 private fun TvChannelTypeRow(
     type: ChannelType,
     choices: List<ServiceGroup>,
     onPlay: (Long) -> Unit,
     loadLogo: suspend (Long, Int?) -> ByteArray?,
+    rowFocusRequester: FocusRequester,
+    previousRow: FocusRequester,
+    nextRow: FocusRequester,
     initialCardFocusRequester: FocusRequester,
     isInitialRow: Boolean,
 ) {
+    val rowState = rememberLazyListState()
+    val horizontalInset = with(LocalDensity.current) { 64.dp.toPx() }
+    val bringIntoViewSpec = remember(horizontalInset) { insetBringIntoViewSpec(horizontalInset) }
+    val requesters = remember(choices.map { it.id }) { choices.associate { it.id to FocusRequester() } }
+    val selectedId = rememberSaveable { mutableStateOf(choices.first().id) }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         androidx.tv.material3.Text(
             text = type.value,
@@ -632,27 +652,40 @@ private fun TvChannelTypeRow(
             color = androidx.tv.material3.MaterialTheme.colorScheme.onBackground,
             style = androidx.tv.material3.MaterialTheme.typography.titleLarge,
         )
-        LazyRow(
-            modifier = Modifier.focusRestorer(),
-            contentPadding = PaddingValues(horizontal = 64.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            itemsIndexed(
-                items = choices,
-                key = { _, choice -> choice.id },
-                contentType = { _, _ -> "service-card" },
-            ) { index, choice ->
-                TvServiceCard(
-                    choice = choice,
-                    onPlay = onPlay,
-                    loadLogo = loadLogo,
-                    modifier =
-                        if (isInitialRow && index == 0) {
-                            Modifier.focusRequester(initialCardFocusRequester)
-                        } else {
-                            Modifier
-                        },
-                )
+        CompositionLocalProvider(LocalBringIntoViewSpec provides bringIntoViewSpec) {
+            LazyRow(
+                state = rowState,
+                modifier =
+                    Modifier
+                        .focusRequester(rowFocusRequester)
+                        .then(if (isInitialRow) Modifier.focusRequester(initialCardFocusRequester) else Modifier)
+                        .focusProperties {
+                            onEnter = { requesters[selectedId.value]?.requestFocus() }
+                        }.focusGroup(),
+                contentPadding = PaddingValues(horizontal = 64.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                itemsIndexed(choices, key = {
+                    _,
+                    choice,
+                    ->
+                    choice.id
+                }, contentType = { _, _ -> "service-card" }) { index, choice ->
+                    TvServiceCard(
+                        choice,
+                        onPlay,
+                        loadLogo,
+                        Modifier
+                            .focusRequester(requesters.getValue(choice.id))
+                            .onFocusChanged { if (it.isFocused) selectedId.value = choice.id }
+                            .focusProperties {
+                                up = previousRow
+                                down = nextRow
+                                if (index == 0) left = FocusRequester.Cancel
+                                if (index == choices.lastIndex) right = FocusRequester.Cancel
+                            },
+                    )
+                }
             }
         }
     }
@@ -666,41 +699,30 @@ private fun TvServiceCard(
     modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val focused by interaction.collectIsFocusedAsState()
+    val focused = interaction.collectIsFocusedAsState()
     val cardShape = MaterialTheme.shapes.large
-    val containerColor =
-        if (focused) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainer
-        }
-    val contentColor =
-        if (focused) {
-            MaterialTheme.colorScheme.onPrimaryContainer
-        } else {
-            MaterialTheme.colorScheme.onSurface
-        }
+    val containerColor = MaterialTheme.colorScheme.surfaceContainer
+    val focusedContainerColor = MaterialTheme.colorScheme.primaryContainer
+    val focusedBorderColor = MaterialTheme.colorScheme.primary
     Column(
         modifier
             .width(256.dp)
-            .height(168.dp)
+            .height(184.dp)
             .clip(cardShape)
-            .background(containerColor)
-            .border(3.dp, if (focused) MaterialTheme.colorScheme.primary else Color.Transparent, cardShape)
-            .clickable(interactionSource = interaction, indication = null) { onPlay(choice.primaryServiceId) }
-            .focusable(interactionSource = interaction)
+            .drawWithCache {
+                val outline = cardShape.createOutline(size, layoutDirection, this)
+                val border = Stroke(6.dp.toPx())
+                onDrawBehind {
+                    drawRect(if (focused.value) focusedContainerColor else containerColor)
+                    if (focused.value) drawOutline(outline, focusedBorderColor, style = border)
+                }
+            }.clickable(interactionSource = interaction, indication = null) { onPlay(choice.primaryServiceId) }
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        androidx.compose.runtime.CompositionLocalProvider(
-            androidx.compose.material3.LocalContentColor provides contentColor,
-        ) {
-            ServiceIdentity(choice, loadLogo, focused = focused)
-            TvCurrentProgram(choice.current, focused)
-            choice.next?.let {
-                NextProgram(it)
-            }
-        }
+        ServiceIdentity(choice, loadLogo, focusState = focused)
+        TvCurrentProgram(choice.current, focused)
+        choice.next?.let { NextProgram(it) }
     }
 }
 
@@ -708,7 +730,7 @@ private fun TvServiceCard(
 @Composable
 private fun TvCurrentProgram(
     program: Program?,
-    focused: Boolean,
+    focused: State<Boolean>,
 ) {
     if (program == null) {
         MissingProgramInformation()
@@ -729,14 +751,11 @@ private fun TvCurrentProgram(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Text(
+        FocusedMarqueeText(
             program.title,
+            focused = focused,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
-            modifier = if (focused) Modifier.basicMarquee(iterations = 2) else Modifier,
         )
         TvProgramProgress(program)
     }
@@ -748,6 +767,34 @@ private fun TvProgramProgress(program: Program) {
         progress = { program.progress() },
         modifier = Modifier.fillMaxWidth().height(3.dp),
         drawStopIndicator = {},
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FocusedMarqueeText(
+    text: String,
+    focused: State<Boolean>?,
+    style: TextStyle,
+    fontWeight: FontWeight,
+) {
+    var marquee by remember { mutableStateOf(false) }
+    val isFocused = focused?.value == true
+    LaunchedEffect(isFocused) {
+        marquee = false
+        if (isFocused) {
+            delay(500)
+            marquee = true
+        }
+    }
+    Text(
+        text,
+        style = style,
+        fontWeight = fontWeight,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+        modifier = if (marquee) Modifier.basicMarquee(iterations = 2) else Modifier,
     )
 }
 

@@ -325,7 +325,9 @@ private fun Program.eventCommonGroup(): Set<ProgramKey> =
         }
     }
 
-private fun String.normalizedForComparison(): String = replace(Regex("[\\s　]+"), " ").trim()
+private val whitespace = Regex("[\\s　]+")
+
+private fun String.normalizedForComparison(): String = replace(whitespace, " ").trim()
 
 private fun Service.stationGroupKey(): List<Any?> =
     listOf(
@@ -346,7 +348,7 @@ private fun Service.bsStationName(): String {
     val normalized =
         Normalizer
             .normalize(name, Normalizer.Form.NFKC)
-            .replace(Regex("[\\s　]+"), "")
+            .replace(whitespace, "")
     val withoutServiceId =
         normalized
             .removeSuffix(serviceId.toString())

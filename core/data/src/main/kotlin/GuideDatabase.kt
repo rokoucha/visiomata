@@ -61,6 +61,19 @@ internal data class ProgramEntity(
     val audiosJson: String? = null,
 )
 
+internal data class HomeProgramEntity(
+    val id: Long,
+    val eventId: Int,
+    val networkId: Int,
+    val transportStreamId: Int?,
+    val serviceId: Int,
+    val title: String?,
+    val description: String?,
+    val startAt: Long,
+    val duration: Long,
+    val relatedItemsJson: String?,
+)
+
 @Entity(tableName = "guide_cache")
 internal data class GuideCacheEntity(
     @PrimaryKey val source: String,
@@ -108,7 +121,10 @@ internal interface GuideDao {
 
     @Query(
         """
-        SELECT programs.* FROM services
+        SELECT programs.id, programs.eventId, programs.networkId, programs.transportStreamId,
+            programs.serviceId, programs.title, programs.description, programs.startAt,
+            programs.duration, programs.relatedItemsJson
+        FROM services
         INNER JOIN programs ON programs.cacheId IN (
             SELECT candidate.cacheId FROM programs AS candidate
             WHERE candidate.source = services.source
@@ -124,6 +140,28 @@ internal interface GuideDao {
     )
     fun observeHomePrograms(
         source: String,
+        now: Long,
+    ): Flow<List<HomeProgramEntity>>
+
+    @Query(
+        """
+        SELECT programs.* FROM services
+        INNER JOIN programs ON programs.cacheId IN (
+            SELECT candidate.cacheId FROM programs AS candidate
+            WHERE candidate.source = services.source
+                AND candidate.networkId = services.networkId
+                AND candidate.serviceId = services.serviceId
+                AND candidate.startAt + candidate.duration > :now
+            ORDER BY candidate.startAt, candidate.id
+            LIMIT 2
+        )
+        WHERE services.source = :source AND services.id = :serviceId
+        ORDER BY programs.startAt
+    """,
+    )
+    fun observeServicePrograms(
+        source: String,
+        serviceId: Long,
         now: Long,
     ): Flow<List<ProgramEntity>>
 

@@ -20,6 +20,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
@@ -72,12 +73,9 @@ class ProgramGuideRepository(
     fun observe(settings: MirakurunSettings): Flow<ProgramGuide> {
         val source = settings.cacheKey
         val homePrograms =
-            flow {
-                while (true) {
-                    emit(System.currentTimeMillis())
-                    delay(HOME_QUERY_REFRESH_MILLIS)
-                }
-            }.flatMapLatest { now -> dao.observeHomePrograms(source, now) }
+            currentTimeTicks().flatMapLatest { now ->
+                dao.observeHomePrograms(source, now).distinctUntilChanged()
+            }
         return combine(dao.observeServices(source), homePrograms) { services, programs ->
             ProgramGuide(
                 services = services.map { it.toModel() },
@@ -85,6 +83,29 @@ class ProgramGuideRepository(
             )
         }.flowOn(Dispatchers.Default)
     }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun observeService(
+        settings: MirakurunSettings,
+        serviceId: Long,
+    ): Flow<ProgramGuide> {
+        val source = settings.cacheKey
+        val programs =
+            currentTimeTicks().flatMapLatest { now ->
+                dao.observeServicePrograms(source, serviceId, now).distinctUntilChanged()
+            }
+        return combine(dao.observeServices(source), programs) { services, currentPrograms ->
+            ProgramGuide(services.map { it.toModel() }, currentPrograms.map { it.toModel() })
+        }.flowOn(Dispatchers.Default)
+    }
+
+    private fun currentTimeTicks(): Flow<Long> =
+        flow {
+            while (true) {
+                emit(System.currentTimeMillis())
+                delay(HOME_QUERY_REFRESH_MILLIS)
+            }
+        }
 
     /**
      * Refreshes the full home snapshot (service catalogue plus every service's current
@@ -96,7 +117,7 @@ class ProgramGuideRepository(
         settings: MirakurunSettings,
         force: Boolean = false,
     ): Flow<ProgramGuideLoadState> =
-        observeWithRefresh(settings, startDelayMillis = 0) {
+        observeWithRefresh(observe(settings), startDelayMillis = 0) {
             refreshHomeSnapshot(settings, force)
         }
 
@@ -104,7 +125,7 @@ class ProgramGuideRepository(
         settings: MirakurunSettings,
         serviceId: Long,
     ): Flow<ProgramGuideLoadState> =
-        observeWithRefresh(settings) {
+        observeWithRefresh(observeService(settings, serviceId)) {
             refreshServices(settings)
             dao.service("${settings.cacheKey}:$serviceId")?.let { service ->
                 refreshChannelType(settings, ChannelType(service.channelType))
@@ -112,12 +133,12 @@ class ProgramGuideRepository(
         }
 
     private fun observeWithRefresh(
-        settings: MirakurunSettings,
+        guide: Flow<ProgramGuide>,
         startDelayMillis: Long = AUTO_REFRESH_DELAY_MILLIS,
         refresh: suspend () -> Unit,
     ): Flow<ProgramGuideLoadState> =
         combine(
-            observe(settings),
+            guide,
             flow {
                 emit(ServiceRefreshResult(isRefreshing = true))
                 delay(startDelayMillis)
@@ -844,25 +865,44 @@ private fun ProgramEntity.toModel() =
         endAt = Instant.ofEpochMilli(startAt + duration),
         primaryGenre = genreLevel1?.let { ProgramGenre(it, genreLevel2 ?: 0) },
         extended = extendedJson?.let(stringMapAdapter::fromJson).orEmpty(),
-        relatedPrograms =
-            relatedItemsJson?.let(relatedItemsAdapter::fromJson).orEmpty().mapNotNull {
-                val type = it.type ?: return@mapNotNull null
-                val relatedServiceId = it.serviceId ?: return@mapNotNull null
-                val relatedEventId = it.eventId ?: return@mapNotNull null
-                RelatedProgram(
-                    type = type,
-                    networkId = it.networkId ?: networkId,
-                    transportStreamId = it.transportStreamId ?: transportStreamId,
-                    serviceId = relatedServiceId,
-                    eventId = relatedEventId,
-                )
-            },
+        relatedPrograms = relatedItemsJson.toRelatedPrograms(networkId, transportStreamId),
         audios =
             audiosJson
                 ?.let(programAudiosAdapter::fromJson)
                 .orEmpty()
                 .mapNotNull(ProgramAudioDto::toModel),
     )
+
+private fun HomeProgramEntity.toModel() =
+    Program(
+        id = id,
+        eventId = eventId,
+        networkId = networkId,
+        transportStreamId = transportStreamId,
+        serviceId = serviceId,
+        title = title ?: "番組情報なし",
+        description = description.orEmpty(),
+        startAt = Instant.ofEpochMilli(startAt),
+        endAt = Instant.ofEpochMilli(startAt + duration),
+        relatedPrograms = relatedItemsJson.toRelatedPrograms(networkId, transportStreamId),
+    )
+
+private fun String?.toRelatedPrograms(
+    networkId: Int,
+    transportStreamId: Int?,
+): List<RelatedProgram> =
+    this?.let(relatedItemsAdapter::fromJson).orEmpty().mapNotNull {
+        val type = it.type ?: return@mapNotNull null
+        val relatedServiceId = it.serviceId ?: return@mapNotNull null
+        val relatedEventId = it.eventId ?: return@mapNotNull null
+        RelatedProgram(
+            type = type,
+            networkId = it.networkId ?: networkId,
+            transportStreamId = it.transportStreamId ?: transportStreamId,
+            serviceId = relatedServiceId,
+            eventId = relatedEventId,
+        )
+    }
 
 /**
  * Keeps programmes that are still airing or upcoming. The cache retains every
