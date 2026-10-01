@@ -902,7 +902,9 @@ private fun ConnectedProgramGuide(
     }
     val selectedType = ChannelType(selectedTypeValue)
     val broadcastDate = LocalDate.ofEpochDay(broadcastDateEpochDay)
-    var guide by remember { mutableStateOf(ProgramGuide(emptyList(), emptyList())) }
+    var guide by remember {
+        mutableStateOf(ProgramGuide(emptyList(), emptyList()), referentialEqualityPolicy())
+    }
     var renderedGuideType by remember { mutableStateOf<String?>(null) }
     var availabilityByType by remember {
         mutableStateOf<Map<String, ProgramGuideAvailability>>(emptyMap())
@@ -934,11 +936,15 @@ private fun ConnectedProgramGuide(
     LaunchedEffect(guideUseCases, settings, selectedType, startAt, endAt) {
         guideUseCases.observeGuide(settings, selectedType, startAt, endAt).collect { state ->
             val incoming = state.guide
+            val previous = guide.takeIf { renderedGuideType == selectedType.value }
             guide =
-                if (renderedGuideType == selectedType.value) {
-                    incoming.retainingWindow(guide, startAt, endAt)
-                } else {
-                    incoming
+                withContext(Dispatchers.Default) {
+                    val snapshot = previous?.let { incoming.retainingWindow(it, startAt, endAt) } ?: incoming
+                    // Comparing all programs is also too expensive for the UI thread.
+                    if (snapshot == previous) return@withContext previous
+                    // Prepare cached station schedules before handing the snapshot to the UI.
+                    snapshot.servicesWithDistinctProgramming.forEach { snapshot.displaySchedule(it) }
+                    snapshot
                 }
             renderedGuideType = selectedType.value
             isLoading = state.isRefreshing

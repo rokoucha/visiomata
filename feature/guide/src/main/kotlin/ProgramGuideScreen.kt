@@ -53,6 +53,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -62,6 +63,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -73,9 +75,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -96,6 +101,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
@@ -601,6 +609,7 @@ private fun VirtualizedGuide(
         }
     }
     val density = LocalDensity.current
+    val textCache = remember(density) { GuideTextCache() }
     val zone = ZoneId.systemDefault()
     val timeRailPx = with(density) { (if (isTv) 56.dp else 52.dp).toPx() }
     val stationWidthPx = with(density) { (if (isTv) 216.dp else 216.dp).toPx() }
@@ -623,10 +632,11 @@ private fun VirtualizedGuide(
     var selectedStation by remember(services) { mutableIntStateOf(0) }
     var selectedProgram by remember(services) { mutableIntStateOf(0) }
     var hasInitialSelection by remember(services) { mutableStateOf(false) }
+
     // A window change is observed by composition one frame before LaunchedEffect can
     // commit the rebased state. Render with the rebased coordinate immediately so the
     // absolute time at the top of the viewport never jumps for that transitional frame.
-    val renderVerticalOffset =
+    fun renderVerticalOffset(): Float =
         if (windowStart != previousWindowStart && pendingRebase) {
             GuideTimeline.rebaseOffset(
                 previousWindowStart,
@@ -637,33 +647,28 @@ private fun VirtualizedGuide(
         } else {
             verticalOffset
         }
-    val now = Instant.now()
-    val isNowInViewport =
-        if (viewportHeight <= 0f) {
-            true
-        } else if (now < windowStart || now >= windowEnd) {
-            false
-        } else {
-            val nowY = Duration.between(windowStart, now).toMinutes() * minuteHeightPx
-            nowY >= renderVerticalOffset &&
-                nowY <= renderVerticalOffset + viewportHeight - headerHeightPx
-        }
-    val visibleInstant =
-        remember(windowStart, renderVerticalOffset, minuteHeightPx) {
-            GuideTimeline.instantAtOffset(windowStart, renderVerticalOffset, minuteHeightPx)
-        }
-    val visibleDisplayDate =
-        remember(visibleInstant, zone) {
-            GuideTimeline.displayDateAt(visibleInstant, zone)
-        }
-    val visibleBroadcastDate =
-        remember(visibleInstant, zone) {
-            GuideTimeline.broadcastDateAt(visibleInstant, zone)
-        }
-    val background = MaterialTheme.colorScheme.background
     val surface = MaterialTheme.colorScheme.surface
     val surfaceContainer = MaterialTheme.colorScheme.surfaceContainer
     val colorScheme = MaterialTheme.colorScheme
+    val cardCache =
+        remember(guide, windowStart, density, colorScheme, isTv) { GuideDrawCache(32 * 1024 * 1024) }
+    val headerCache = remember(density, colorScheme, isTv) { GuideDrawCache(8 * 1024 * 1024) }
+    var textPrepared by remember(cardCache, services.isEmpty()) { mutableStateOf(services.isEmpty()) }
+    val tileMinutes = 120L
+    val tileHeight = tileMinutes * minuteHeightPx
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
+    DisposableEffect(cardCache, headerCache) {
+        onDispose {
+            cardCache.clear()
+            headerCache.clear()
+        }
+    }
+    val hourLabels =
+        remember(windowStart) {
+            List(24 * GuideTimeline.windowDays + 1) { hour ->
+                hourFormatter.format(windowStart.plusSeconds(hour * 3600L))
+            }
+        }
     val hourDividerColor = colorScheme.outlineVariant.copy(alpha = 0.72f)
     val hourDividerHeight = with(density) { 1.dp.toPx() }
     val programOutlineWidth = with(density) { (if (isTv) 1.dp else 0.75.dp).toPx() }
@@ -690,8 +695,6 @@ private fun VirtualizedGuide(
                 lerp(surfaceContainer, Color(0xFF53789E), 0.30f),
             )
         }
-    val currentHorizontalOffset by rememberUpdatedState(horizontalOffset)
-    val currentVerticalOffset by rememberUpdatedState(renderVerticalOffset)
     val flingDecay = rememberSplineBasedDecay<Float>()
     val titlePaint =
         remember {
@@ -713,6 +716,73 @@ private fun VirtualizedGuide(
     val chromeSecondaryPaint =
         remember { android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG) }
             .also { it.color = onSurfaceVariantArgb }
+
+    fun DrawScope.drawCard(
+        program: Program,
+        cardHeight: Float,
+        titlePaint: android.graphics.Paint,
+        secondaryPaint: android.graphics.Paint,
+    ) {
+        val cardWidth = stationWidthPx - stationGutterPx
+        val cardLeft = 0f
+        val top = 0f
+        val cardColor =
+            genreContainers.getOrElse(program.primaryGenre?.level1 ?: -1) {
+                surfaceContainer
+            }
+        val cardOutlineColor = lerp(cardColor, colorScheme.onSurface, 0.22f)
+        drawRoundRect(
+            cardColor,
+            Offset(cardLeft, top),
+            Size(cardWidth, cardHeight.coerceAtLeast(1f)),
+            CornerRadius.Zero,
+        )
+        drawRect(
+            cardOutlineColor,
+            Offset(cardLeft + programOutlineWidth / 2f, top + programOutlineWidth / 2f),
+            Size(
+                (cardWidth - programOutlineWidth).coerceAtLeast(1f),
+                (cardHeight - programOutlineWidth).coerceAtLeast(1f),
+            ),
+            style = Stroke(programOutlineWidth),
+        )
+        drawIntoCanvas { canvas ->
+            textCache.drawCardText(
+                canvas.nativeCanvas,
+                program,
+                cardWidth,
+                cardHeight,
+                density,
+                isTv,
+                titlePaint,
+                secondaryPaint,
+            )
+        }
+    }
+
+    fun DrawScope.drawTile(
+        service: Service,
+        tileStart: Instant,
+        titlePaint: android.graphics.Paint,
+        secondaryPaint: android.graphics.Paint,
+    ) {
+        val tileEnd = minOf(tileStart.plusSeconds(tileMinutes * 60), windowEnd)
+        clipRect {
+            guide.displaySchedule(service).forEach { program ->
+                if (program.endAt <= tileStart || program.startAt >= tileEnd) return@forEach
+                val clippedStart = maxOf(program.startAt, windowStart)
+                val top = Duration.between(tileStart, clippedStart).toMinutes() * minuteHeightPx
+                val height =
+                    Duration
+                        .between(clippedStart, minOf(program.endAt, windowEnd))
+                        .toMinutes()
+                        .coerceAtLeast(1) * minuteHeightPx
+                translate(stationGutterPx / 2f, top) {
+                    drawCard(program, height, titlePaint, secondaryPaint)
+                }
+            }
+        }
+    }
 
     fun maxHorizontal() = max(0f, services.size * stationWidthPx - (viewportWidth - timeRailPx))
 
@@ -783,46 +853,49 @@ private fun VirtualizedGuide(
         keepSelectionVisible()
     }
 
-    LaunchedEffect(isNowInViewport) {
-        currentOnNowVisibilityChanged(isNowInViewport)
-    }
-    LaunchedEffect(
-        visibleDisplayDate,
-        visibleBroadcastDate,
-        rangeAnchorDate,
-        availability,
-        renderVerticalOffset,
-        viewportHeight,
-    ) {
-        currentOnVisibleDateChanged(visibleDisplayDate)
-        val preloadThreshold = GuideTimeline.minutesPerDay * minuteHeightPx * 0.35f
-        val nearWindowEdge =
-            viewportHeight > 0f && (
-                renderVerticalOffset < preloadThreshold ||
-                    renderVerticalOffset > maxVertical() - preloadThreshold
+    LaunchedEffect(windowStart, windowEnd, rangeAnchorDate, availability, minuteHeightPx, headerHeightPx, zone) {
+        snapshotFlow { renderVerticalOffset() to viewportHeight }.collect { (renderVerticalOffset, height) ->
+            val now = Instant.now()
+            val nowY = Duration.between(windowStart, now).toMinutes() * minuteHeightPx
+            currentOnNowVisibilityChanged(
+                height <= 0f ||
+                    (
+                        now >= windowStart && now < windowEnd && nowY >= renderVerticalOffset &&
+                            nowY <= renderVerticalOffset + height - headerHeightPx
+                    ),
             )
-        val earliestAnchor = availability?.let { GuideTimeline.broadcastDateAt(it.startAt, zone) }
-        val latestAnchor =
-            availability?.let {
-                GuideTimeline.broadcastDateAt(it.endAt.minusMillis(1), zone)
+            val visibleInstant = GuideTimeline.instantAtOffset(windowStart, renderVerticalOffset, minuteHeightPx)
+            val visibleBroadcastDate = GuideTimeline.broadcastDateAt(visibleInstant, zone)
+            currentOnVisibleDateChanged(GuideTimeline.displayDateAt(visibleInstant, zone))
+            val preloadThreshold = GuideTimeline.minutesPerDay * minuteHeightPx * 0.35f
+            val nearWindowEdge =
+                viewportHeight > 0f && (
+                    renderVerticalOffset < preloadThreshold ||
+                        renderVerticalOffset > maxVertical() - preloadThreshold
+                )
+            val earliestAnchor = availability?.let { GuideTimeline.broadcastDateAt(it.startAt, zone) }
+            val latestAnchor =
+                availability?.let {
+                    GuideTimeline.broadcastDateAt(it.endAt.minusMillis(1), zone)
+                }
+            val nextAnchor =
+                GuideTimeline.clampDate(
+                    visibleBroadcastDate,
+                    earliestAnchor,
+                    latestAnchor,
+                )
+            if (
+                nearWindowEdge &&
+                nextAnchor != rangeAnchorDate &&
+                requestedAnchorDate != nextAnchor &&
+                !pendingRebase
+            ) {
+                pendingRebase = true
+                requestedAnchorDate = nextAnchor
+                currentOnRangeAnchorChanged(nextAnchor)
+            } else if (nextAnchor == rangeAnchorDate) {
+                requestedAnchorDate = null
             }
-        val nextAnchor =
-            GuideTimeline.clampDate(
-                visibleBroadcastDate,
-                earliestAnchor,
-                latestAnchor,
-            )
-        if (
-            nearWindowEdge &&
-            nextAnchor != rangeAnchorDate &&
-            requestedAnchorDate != nextAnchor &&
-            !pendingRebase
-        ) {
-            pendingRebase = true
-            requestedAnchorDate = nextAnchor
-            currentOnRangeAnchorChanged(nextAnchor)
-        } else if (nextAnchor == rangeAnchorDate) {
-            requestedAnchorDate = null
         }
     }
 
@@ -873,341 +946,404 @@ private fun VirtualizedGuide(
         }
     }
 
-    Canvas(
-        modifier
-            .fillMaxSize()
-            .background(background)
-            .focusRequester(focusRequester)
-            .onFocusChanged { onFocusChanged(it.isFocused) }
-            .onPreviewKeyEvent { event ->
-                if (!isTv || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                when (event.key) {
-                    Key.DirectionUp -> {
-                        moveVertical(-1)
-                        true
-                    }
+    LaunchedEffect(cardCache, windowEnd, layoutDirection) {
+        snapshotFlow { GuideViewport(horizontalOffset, renderVerticalOffset(), viewportWidth, viewportHeight) }
+            .collectLatest { viewport ->
+                if (viewport.width <= 0f || viewport.height <= 0f || services.isEmpty()) return@collectLatest
+                val preparedTitlePaint = android.graphics.Paint(titlePaint)
+                val preparedSecondaryPaint = android.graphics.Paint(secondaryPaint)
 
-                    Key.DirectionDown -> {
-                        moveVertical(1)
-                        true
+                suspend fun prepare(margin: Int) =
+                    withContext(Dispatchers.Default) {
+                        val first = floor(viewport.left / stationWidthPx).toInt().coerceAtLeast(0)
+                        val last =
+                            ceil((viewport.left + viewport.width - timeRailPx) / stationWidthPx)
+                                .toInt()
+                                .coerceAtMost(services.size) - 1
+                        val firstTile = floor(viewport.top / tileHeight).toLong().coerceAtLeast(0)
+                        val lastTile = floor((viewport.top + viewport.height - headerHeightPx) / tileHeight).toLong()
+                        val requests =
+                            guideTilesToPrepare(
+                                first..last,
+                                firstTile..lastTile,
+                                services.size,
+                                GuideTimeline.minutesPerDay * GuideTimeline.windowDays / tileMinutes,
+                                cardCache.capacity(stationWidthPx, tileHeight),
+                                margin,
+                            )
+                        for ((station, tile) in requests) {
+                            currentCoroutineContext().ensureActive()
+                            val service = services[station]
+                            val tileStart = windowStart.plusSeconds(tile * tileMinutes * 60)
+                            cardCache.prepare(
+                                density,
+                                layoutDirection,
+                                service.id to tileStart,
+                                stationWidthPx,
+                                tileHeight,
+                            ) {
+                                drawTile(service, tileStart, preparedTitlePaint, preparedSecondaryPaint)
+                            }
+                        }
                     }
+                prepare(0)
+                textPrepared = true
+                prepare(1)
+            }
+    }
 
-                    Key.DirectionLeft -> {
-                        moveHorizontal(-1)
-                        true
-                    }
+    Box(modifier) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .focusRequester(focusRequester)
+                .onFocusChanged { onFocusChanged(it.isFocused) }
+                .onPreviewKeyEvent { event ->
+                    if (!isTv || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    when (event.key) {
+                        Key.DirectionUp -> {
+                            moveVertical(-1)
+                            true
+                        }
 
-                    Key.DirectionRight -> {
-                        moveHorizontal(1)
-                        true
-                    }
+                        Key.DirectionDown -> {
+                            moveVertical(1)
+                            true
+                        }
 
-                    Key.Enter, Key.DirectionCenter -> {
-                        val service = services.getOrNull(selectedStation)
-                        val program = service?.let(guide::displaySchedule)?.getOrNull(selectedProgram)
-                        if (service != null && program != null) onProgramSelected(service, program)
-                        true
-                    }
+                        Key.DirectionLeft -> {
+                            moveHorizontal(-1)
+                            true
+                        }
 
-                    else -> {
-                        false
+                        Key.DirectionRight -> {
+                            moveHorizontal(1)
+                            true
+                        }
+
+                        Key.Enter, Key.DirectionCenter -> {
+                            val service = services.getOrNull(selectedStation)
+                            val program = service?.let(guide::displaySchedule)?.getOrNull(selectedProgram)
+                            if (service != null && program != null) onProgramSelected(service, program)
+                            true
+                        }
+
+                        else -> {
+                            false
+                        }
                     }
-                }
-            }.focusable(isTv)
-            .pointerInput(guide, services) {
-                detectTapGestures { tap ->
-                    if (tap.x < timeRailPx || tap.y < headerHeightPx) return@detectTapGestures
-                    val stationIndex = floor((tap.x - timeRailPx + currentHorizontalOffset) / stationWidthPx).toInt()
-                    val minute = (tap.y - headerHeightPx + currentVerticalOffset) / minuteHeightPx
-                    val instant = windowStart.plusSeconds((minute * 60).toLong())
-                    val service = services.getOrNull(stationIndex) ?: return@detectTapGestures
-                    val program =
-                        guide
-                            .displaySchedule(service)
-                            .firstOrNull { instant >= it.startAt && instant < it.endAt }
-                            ?: return@detectTapGestures
-                    onProgramSelected(service, program)
-                }
-            }.pointerInput(windowStart, guide, services, availability, viewportWidth, viewportHeight) {
-                coroutineScope {
-                    val velocityTracker = VelocityTracker()
-                    var horizontalFling: Job? = null
-                    var verticalFling: Job? = null
-                    detectDragGestures(
-                        onDragStart = {
-                            horizontalFling?.cancel()
-                            verticalFling?.cancel()
-                            velocityTracker.resetTracking()
-                        },
-                        onDragEnd = {
-                            val velocity = velocityTracker.calculateVelocity()
-                            horizontalFling =
-                                launch {
-                                    AnimationState(
-                                        initialValue = currentHorizontalOffset,
-                                        initialVelocity = -velocity.x,
-                                    ).animateDecay(flingDecay) {
-                                        val bounded = value.coerceIn(0f, maxHorizontal())
-                                        horizontalOffset = bounded
-                                        if (bounded != value) cancelAnimation()
+                }.focusable(isTv)
+                .pointerInput(windowStart, guide, services) {
+                    detectTapGestures { tap ->
+                        if (tap.x < timeRailPx || tap.y < headerHeightPx) return@detectTapGestures
+                        val stationIndex = floor((tap.x - timeRailPx + horizontalOffset) / stationWidthPx).toInt()
+                        val minute = (tap.y - headerHeightPx + renderVerticalOffset()) / minuteHeightPx
+                        val instant = windowStart.plusSeconds((minute * 60).toLong())
+                        val service = services.getOrNull(stationIndex) ?: return@detectTapGestures
+                        val program =
+                            guide
+                                .displaySchedule(service)
+                                .firstOrNull { instant >= it.startAt && instant < it.endAt }
+                                ?: return@detectTapGestures
+                        onProgramSelected(service, program)
+                    }
+                }.pointerInput(windowStart, guide, services, availability, viewportWidth, viewportHeight) {
+                    coroutineScope {
+                        val velocityTracker = VelocityTracker()
+                        var horizontalFling: Job? = null
+                        var verticalFling: Job? = null
+                        detectDragGestures(
+                            onDragStart = {
+                                horizontalFling?.cancel()
+                                verticalFling?.cancel()
+                                velocityTracker.resetTracking()
+                            },
+                            onDragEnd = {
+                                val velocity = velocityTracker.calculateVelocity()
+                                horizontalFling =
+                                    launch {
+                                        AnimationState(
+                                            initialValue = horizontalOffset,
+                                            initialVelocity = -velocity.x,
+                                        ).animateDecay(flingDecay) {
+                                            val bounded = value.coerceIn(0f, maxHorizontal())
+                                            horizontalOffset = bounded
+                                            if (bounded != value) cancelAnimation()
+                                        }
                                     }
-                                }
-                            verticalFling =
-                                launch {
-                                    AnimationState(
-                                        initialValue = currentVerticalOffset,
-                                        initialVelocity = -velocity.y,
-                                    ).animateDecay(flingDecay) {
-                                        val bounded = value.coerceIn(minVertical(), maxVertical())
-                                        verticalOffset = bounded
-                                        if (bounded != value) cancelAnimation()
+                                verticalFling =
+                                    launch {
+                                        AnimationState(
+                                            initialValue = renderVerticalOffset(),
+                                            initialVelocity = -velocity.y,
+                                        ).animateDecay(flingDecay) {
+                                            val bounded = value.coerceIn(minVertical(), maxVertical())
+                                            verticalOffset = bounded
+                                            if (bounded != value) cancelAnimation()
+                                        }
                                     }
-                                }
-                        },
-                        onDragCancel = {
-                            velocityTracker.resetTracking()
-                        },
-                    ) { change, drag ->
-                        change.consume()
-                        velocityTracker.addPosition(change.uptimeMillis, change.position)
-                        horizontalOffset = (horizontalOffset - drag.x).coerceIn(0f, maxHorizontal())
-                        verticalOffset =
-                            (verticalOffset - drag.y)
-                                .coerceIn(minVertical(), maxVertical())
+                            },
+                            onDragCancel = {
+                                velocityTracker.resetTracking()
+                            },
+                        ) { change, drag ->
+                            change.consume()
+                            velocityTracker.addPosition(change.uptimeMillis, change.position)
+                            horizontalOffset = (horizontalOffset - drag.x).coerceIn(0f, maxHorizontal())
+                            verticalOffset =
+                                (verticalOffset - drag.y)
+                                    .coerceIn(minVertical(), maxVertical())
+                        }
+                    }
+                },
+        ) {
+            val renderVerticalOffset = renderVerticalOffset()
+            val now = Instant.now()
+            viewportWidth = size.width
+            viewportHeight = size.height
+            drawRect(surface)
+            if (!textPrepared) {
+                return@Canvas
+            }
+            val firstStation = floor(horizontalOffset / stationWidthPx).toInt().coerceAtLeast(0)
+            val lastStation =
+                ceil((horizontalOffset + size.width - timeRailPx) / stationWidthPx)
+                    .toInt()
+                    .coerceAtMost(services.size)
+            val visibleStartMinutes = floor(renderVerticalOffset / minuteHeightPx).toLong().coerceAtLeast(0)
+            val visibleEndMinutes =
+                ceil((renderVerticalOffset + size.height - headerHeightPx) / minuteHeightPx)
+                    .toLong()
+                    .coerceAtMost((GuideTimeline.minutesPerDay * GuideTimeline.windowDays).toLong())
+            clipRect(left = timeRailPx, top = headerHeightPx) {
+                for (stationIndex in firstStation until lastStation) {
+                    val service = services[stationIndex]
+                    val left = timeRailPx + stationIndex * stationWidthPx - horizontalOffset
+                    drawRect(Color.White.copy(alpha = 0.08f), Offset(left, headerHeightPx), Size(1f, size.height))
+                    val firstTile = visibleStartMinutes / tileMinutes
+                    val lastTile = visibleEndMinutes / tileMinutes
+                    for (tile in firstTile..lastTile) {
+                        val tileStart = windowStart.plusSeconds(tile * tileMinutes * 60)
+                        val tileTop = headerHeightPx + tile * tileHeight - renderVerticalOffset
+                        cardCache.draw(this, service.id to tileStart, stationWidthPx, tileHeight, left, tileTop) {
+                            drawTile(service, tileStart, titlePaint, secondaryPaint)
+                        }
+                    }
+
+                    if (isTv && stationIndex == selectedStation) {
+                        guide.displaySchedule(service).getOrNull(selectedProgram)?.let { program ->
+                            val top =
+                                headerHeightPx + Duration
+                                    .between(windowStart, maxOf(program.startAt, windowStart))
+                                    .toMinutes() * minuteHeightPx - renderVerticalOffset
+                            val height =
+                                Duration
+                                    .between(maxOf(program.startAt, windowStart), minOf(program.endAt, windowEnd))
+                                    .toMinutes()
+                                    .coerceAtLeast(1) * minuteHeightPx
+                            drawRect(
+                                colorScheme.onSurface,
+                                Offset(left + stationGutterPx / 2f, top),
+                                Size(stationWidthPx - stationGutterPx, height),
+                                style = Stroke(with(density) { 3.dp.toPx() }),
+                            )
+                        }
                     }
                 }
-            },
-    ) {
-        viewportWidth = size.width
-        viewportHeight = size.height
-        drawRect(surface)
-        val firstStation = floor(horizontalOffset / stationWidthPx).toInt().coerceAtLeast(0)
-        val lastStation =
-            ceil((horizontalOffset + size.width - timeRailPx) / stationWidthPx)
-                .toInt()
-                .coerceAtMost(services.size)
-        val visibleStartMinutes = floor(renderVerticalOffset / minuteHeightPx).toLong().coerceAtLeast(0)
-        val visibleEndMinutes =
-            ceil((renderVerticalOffset + size.height - headerHeightPx) / minuteHeightPx)
-                .toLong()
-                .coerceAtMost((GuideTimeline.minutesPerDay * GuideTimeline.windowDays).toLong())
-        val visibleStart = windowStart.plusSeconds(visibleStartMinutes * 60)
-        val visibleEnd = windowStart.plusSeconds(visibleEndMinutes * 60)
-        clipRect(left = timeRailPx, top = headerHeightPx) {
-            for (stationIndex in firstStation until lastStation) {
-                val service = services[stationIndex]
-                val left = timeRailPx + stationIndex * stationWidthPx - horizontalOffset
-                drawRect(Color.White.copy(alpha = 0.08f), Offset(left, headerHeightPx), Size(1f, size.height))
-                guide.displaySchedule(service).forEachIndexed { programIndex, program ->
-                    if (program.endAt <= visibleStart || program.startAt >= visibleEnd) return@forEachIndexed
-                    val clippedStart = maxOf(program.startAt, windowStart)
-                    val top =
-                        headerHeightPx + Duration.between(windowStart, clippedStart).toMinutes() * minuteHeightPx -
+                if (now >= windowStart && now < windowEnd) {
+                    val y =
+                        headerHeightPx + Duration.between(windowStart, now).toMinutes() * minuteHeightPx -
                             renderVerticalOffset
-                    val durationMinutes =
-                        Duration
-                            .between(
-                                clippedStart,
-                                minOf(program.endAt, windowEnd),
-                            ).toMinutes()
-                            .coerceAtLeast(1)
-                    val cardHeight = durationMinutes * minuteHeightPx
-                    val cardLeft = left + stationGutterPx / 2f
-                    val cardWidth = stationWidthPx - stationGutterPx
-                    val selectedCard = isTv && stationIndex == selectedStation && programIndex == selectedProgram
-                    val cardColor = genreContainers.getOrElse(program.primaryGenre?.level1 ?: -1) { surfaceContainer }
-                    val cardOutlineColor = lerp(cardColor, colorScheme.onSurface, 0.22f)
-                    drawRoundRect(
-                        cardColor,
-                        Offset(cardLeft, top),
-                        Size(cardWidth, cardHeight.coerceAtLeast(1f)),
-                        CornerRadius.Zero,
-                    )
                     drawRect(
-                        cardOutlineColor,
-                        Offset(cardLeft + programOutlineWidth / 2f, top + programOutlineWidth / 2f),
-                        Size(
-                            (cardWidth - programOutlineWidth).coerceAtLeast(1f),
-                            (cardHeight - programOutlineWidth).coerceAtLeast(1f),
-                        ),
-                        style = Stroke(programOutlineWidth),
+                        Color(0xFFFF7696),
+                        Offset(timeRailPx, y),
+                        Size(size.width - timeRailPx, with(density) { 2.dp.toPx() }),
                     )
-                    if (selectedCard) {
-                        drawRoundRect(
-                            colorScheme.onSurface,
-                            Offset(cardLeft, top),
-                            Size(cardWidth, cardHeight.coerceAtLeast(1f)),
-                            CornerRadius.Zero,
-                            style = Stroke(with(density) { 3.dp.toPx() }),
+                }
+            }
+
+            drawRect(surfaceContainer, Offset(timeRailPx, 0f), Size(size.width - timeRailPx, headerHeightPx))
+            clipRect(left = timeRailPx, top = 0f, bottom = headerHeightPx) {
+                for (stationIndex in firstStation until lastStation) {
+                    val service = services[stationIndex]
+                    val left = timeRailPx + stationIndex * stationWidthPx - horizontalOffset
+                    val logo = stationLogos[service.id]
+                    headerCache.draw(this, service to logo, stationWidthPx, headerHeightPx, left, 0f) {
+                        val left = 0f
+                        drawIntoCanvas { canvas ->
+                            chromePaint.textSize = with(density) { (if (isTv) 14.sp else 13.sp).toPx() }
+                            val inset = with(density) { 12.dp.toPx() }
+                            val logoBoxWidth = with(density) { 44.dp.toPx() }
+                            val logoBoxHeight = with(density) { 30.dp.toPx() }
+                            val logoGap = with(density) { 8.dp.toPx() }
+                            val textX =
+                                if (logo != null) {
+                                    val scale = minOf(logoBoxWidth / logo.width, logoBoxHeight / logo.height)
+                                    val width = logo.width * scale
+                                    val height = logo.height * scale
+                                    val logoTop = (headerHeightPx - height) / 2f
+                                    canvas.nativeCanvas.drawBitmap(
+                                        logo,
+                                        null,
+                                        RectF(left + inset, logoTop, left + inset + width, logoTop + height),
+                                        null,
+                                    )
+                                    left + inset + logoBoxWidth + logoGap
+                                } else {
+                                    left + inset
+                                }
+                            val channelGap = with(density) { 8.dp.toPx() }
+                            drawEllipsized(
+                                canvas.nativeCanvas,
+                                service.name,
+                                textX,
+                                headerHeightPx * 0.48f,
+                                left + stationWidthPx - inset - textX,
+                                chromePaint,
+                            )
+                            chromeSecondaryPaint.textSize = with(density) { (if (isTv) 11.sp else 10.sp).toPx() }
+                            val channelBaseline = headerHeightPx * 0.78f
+                            var channelX = textX
+                            canvas.nativeCanvas.drawText(
+                                service.channelType.value,
+                                channelX,
+                                channelBaseline,
+                                chromeSecondaryPaint,
+                            )
+                            channelX += chromeSecondaryPaint.measureText(service.channelType.value) + channelGap
+                            chromePaint.textSize = with(density) { (if (isTv) 13.sp else 12.sp).toPx() }
+                            canvas.nativeCanvas.drawText(
+                                service.logicalChannelNumber,
+                                channelX,
+                                channelBaseline,
+                                chromePaint,
+                            )
+                        }
+                        drawRect(
+                            stationDividerColor,
+                            Offset(left, 0f),
+                            Size(stationDividerWidth, headerHeightPx),
                         )
                     }
-                    if (cardHeight >= with(density) { 24.dp.toPx() }) {
+                }
+            }
+
+            drawRect(surface, Offset.Zero, Size(timeRailPx, size.height))
+            drawRect(surfaceContainer, Offset.Zero, Size(timeRailPx, headerHeightPx))
+            drawIntoCanvas { canvas ->
+                chromeSecondaryPaint.textSize = with(density) { (if (isTv) 12.sp else 11.sp).toPx() }
+                canvas.nativeCanvas.drawText(
+                    "時刻",
+                    with(density) { 10.dp.toPx() },
+                    headerHeightPx * 0.62f,
+                    chromeSecondaryPaint,
+                )
+            }
+            val firstHour = floor(visibleStartMinutes / 60f).toInt()
+            val lastHour = ceil(visibleEndMinutes / 60f).toInt().coerceAtMost(24 * GuideTimeline.windowDays)
+            clipRect(top = headerHeightPx) {
+                for (hour in firstHour..lastHour) {
+                    val y = headerHeightPx + hour * 60 * minuteHeightPx - renderVerticalOffset
+                    headerCache.draw(this, hourLabels[hour], timeRailPx, 60 * minuteHeightPx, 0f, y) {
+                        val y = 0f
+                        drawRect(
+                            hourDividerColor,
+                            Offset(0f, y),
+                            Size(timeRailPx, hourDividerHeight),
+                        )
                         drawIntoCanvas { canvas ->
-                            val native = canvas.nativeCanvas
-                            native.save()
-                            native.clipRect(cardLeft, top, cardLeft + cardWidth, top + cardHeight)
-                            titlePaint.textSize = with(density) { 14.sp.toPx() }
-                            val inset = with(density) { 8.dp.toPx() }
-                            val cardBottom = top + cardHeight
-                            val titleLineHeight = with(density) { 18.dp.toPx() }
-                            val titleLines = if (cardHeight >= with(density) { 58.dp.toPx() }) 2 else 1
-                            var nextBaseline =
-                                drawWrappedText(
-                                    native,
-                                    program.title,
-                                    cardLeft + inset,
-                                    top + with(density) { (if (isTv) 18.dp else 17.dp).toPx() },
-                                    cardWidth - inset * 2,
-                                    titlePaint,
-                                    titleLines,
-                                    titleLineHeight,
-                                )
-                            if (nextBaseline + with(density) { 12.dp.toPx() } < cardBottom) {
-                                secondaryPaint.textSize = with(density) { 11.sp.toPx() }
-                                native.drawText(
-                                    "${timeFormatter.format(program.startAt)}–${timeFormatter.format(program.endAt)}",
-                                    cardLeft + inset,
-                                    nextBaseline,
-                                    secondaryPaint,
-                                )
-                                nextBaseline += with(density) { 15.dp.toPx() }
-                            }
-                            if (program.description.isNotBlank() &&
-                                nextBaseline + with(density) { 12.dp.toPx() } < cardBottom
-                            ) {
-                                secondaryPaint.textSize = with(density) { 10.sp.toPx() }
-                                val descriptionLineHeight = with(density) { 14.dp.toPx() }
-                                val lines =
-                                    floor(
-                                        (
-                                            cardBottom - nextBaseline -
-                                                with(
-                                                    density,
-                                                ) { 4.dp.toPx() }
-                                        ) / descriptionLineHeight,
-                                    ).toInt()
-                                        .coerceIn(0, 4)
-                                if (lines > 0) {
-                                    drawWrappedText(
-                                        native,
-                                        program.description,
-                                        cardLeft + inset,
-                                        nextBaseline,
-                                        cardWidth - inset * 2,
-                                        secondaryPaint,
-                                        lines,
-                                        descriptionLineHeight,
-                                    )
-                                }
-                            }
-                            native.restore()
+                            chromePaint.textSize = with(density) { 16.sp.toPx() }
+                            canvas.nativeCanvas.drawText(
+                                hourLabels[hour],
+                                with(density) { 10.dp.toPx() },
+                                y + with(density) { 22.dp.toPx() },
+                                chromePaint,
+                            )
                         }
                     }
                 }
             }
-            if (now >= windowStart && now < windowEnd) {
-                val y =
-                    headerHeightPx + Duration.between(windowStart, now).toMinutes() * minuteHeightPx -
-                        renderVerticalOffset
-                drawRect(
-                    Color(0xFFFF7696),
-                    Offset(timeRailPx, y),
-                    Size(size.width - timeRailPx, with(density) { 2.dp.toPx() }),
-                )
-            }
         }
+        if (!textPrepared) CircularProgressIndicator(Modifier.align(Alignment.Center))
+    }
+}
 
-        drawRect(surfaceContainer, Offset(timeRailPx, 0f), Size(size.width - timeRailPx, headerHeightPx))
-        clipRect(left = timeRailPx, top = 0f, bottom = headerHeightPx) {
-            for (stationIndex in firstStation until lastStation) {
-                val service = services[stationIndex]
-                val left = timeRailPx + stationIndex * stationWidthPx - horizontalOffset
-                val logo = stationLogos[service.id]
-                drawIntoCanvas { canvas ->
-                    chromePaint.textSize = with(density) { (if (isTv) 14.sp else 13.sp).toPx() }
-                    val inset = with(density) { 12.dp.toPx() }
-                    val logoBoxWidth = with(density) { 44.dp.toPx() }
-                    val logoBoxHeight = with(density) { 30.dp.toPx() }
-                    val logoGap = with(density) { 8.dp.toPx() }
-                    val textX =
-                        if (logo != null) {
-                            val scale = minOf(logoBoxWidth / logo.width, logoBoxHeight / logo.height)
-                            val width = logo.width * scale
-                            val height = logo.height * scale
-                            val logoTop = (headerHeightPx - height) / 2f
-                            canvas.nativeCanvas.drawBitmap(
-                                logo,
-                                null,
-                                RectF(left + inset, logoTop, left + inset + width, logoTop + height),
-                                null,
-                            )
-                            left + inset + logoBoxWidth + logoGap
-                        } else {
-                            left + inset
-                        }
-                    val channelGap = with(density) { 8.dp.toPx() }
-                    drawEllipsized(
-                        canvas.nativeCanvas,
-                        service.name,
-                        textX,
-                        headerHeightPx * 0.48f,
-                        left + stationWidthPx - inset - textX,
-                        chromePaint,
-                    )
-                    chromeSecondaryPaint.textSize = with(density) { (if (isTv) 11.sp else 10.sp).toPx() }
-                    val channelBaseline = headerHeightPx * 0.78f
-                    var channelX = textX
-                    canvas.nativeCanvas.drawText(
-                        service.channelType.value,
-                        channelX,
-                        channelBaseline,
-                        chromeSecondaryPaint,
-                    )
-                    channelX += chromeSecondaryPaint.measureText(service.channelType.value) + channelGap
-                    chromePaint.textSize = with(density) { (if (isTv) 13.sp else 12.sp).toPx() }
-                    canvas.nativeCanvas.drawText(service.logicalChannelNumber, channelX, channelBaseline, chromePaint)
-                }
-                drawRect(
-                    stationDividerColor,
-                    Offset(left, 0f),
-                    Size(stationDividerWidth, headerHeightPx),
-                )
-            }
-        }
+private data class GuideViewport(
+    val left: Float,
+    val top: Float,
+    val width: Float,
+    val height: Float,
+)
 
-        drawRect(surface, Offset.Zero, Size(timeRailPx, size.height))
-        drawRect(surfaceContainer, Offset.Zero, Size(timeRailPx, headerHeightPx))
-        drawIntoCanvas { canvas ->
-            chromeSecondaryPaint.textSize = with(density) { (if (isTv) 12.sp else 11.sp).toPx() }
-            canvas.nativeCanvas.drawText(
-                "時刻",
-                with(density) { 10.dp.toPx() },
-                headerHeightPx * 0.62f,
-                chromeSecondaryPaint,
+private fun GuideTextCache.drawCardText(
+    native: android.graphics.Canvas?,
+    program: Program,
+    cardWidth: Float,
+    cardHeight: Float,
+    density: androidx.compose.ui.unit.Density,
+    isTv: Boolean,
+    titlePaint: android.graphics.Paint,
+    secondaryPaint: android.graphics.Paint,
+) {
+    if (cardHeight < with(density) { 24.dp.toPx() }) return
+    native?.save()
+    native?.clipRect(0f, 0f, cardWidth, cardHeight)
+    titlePaint.textSize = with(density) { 14.sp.toPx() }
+    val inset = with(density) { 8.dp.toPx() }
+    val titleLineHeight = with(density) { 18.dp.toPx() }
+    val titleLines = if (cardHeight >= with(density) { 58.dp.toPx() }) 2 else 1
+    var nextBaseline =
+        drawWrappedText(
+            native,
+            program.title,
+            inset,
+            with(density) { (if (isTv) 18.dp else 17.dp).toPx() },
+            cardWidth - inset * 2,
+            titlePaint,
+            titleLines,
+            titleLineHeight,
+        )
+    if (nextBaseline + with(density) { 12.dp.toPx() } < cardHeight) {
+        secondaryPaint.textSize = with(density) { 11.sp.toPx() }
+        val time = timeRange(program.startAt, program.endAt)
+        native?.drawText(
+            time,
+            inset,
+            nextBaseline,
+            secondaryPaint,
+        )
+        nextBaseline += with(density) { 15.dp.toPx() }
+    }
+    if (program.description.isNotBlank() &&
+        nextBaseline + with(density) { 12.dp.toPx() } < cardHeight
+    ) {
+        secondaryPaint.textSize = with(density) { 10.sp.toPx() }
+        val descriptionLineHeight = with(density) { 14.dp.toPx() }
+        val lines =
+            floor(
+                (
+                    cardHeight - nextBaseline -
+                        with(
+                            density,
+                        ) { 4.dp.toPx() }
+                ) / descriptionLineHeight,
+            ).toInt()
+                .coerceIn(0, 4)
+        if (lines > 0) {
+            drawWrappedText(
+                native,
+                program.description,
+                inset,
+                nextBaseline,
+                cardWidth - inset * 2,
+                secondaryPaint,
+                lines,
+                descriptionLineHeight,
             )
         }
-        val firstHour = floor(visibleStartMinutes / 60f).toInt()
-        val lastHour = ceil(visibleEndMinutes / 60f).toInt().coerceAtMost(24 * GuideTimeline.windowDays)
-        clipRect(top = headerHeightPx) {
-            for (hour in firstHour..lastHour) {
-                val y = headerHeightPx + hour * 60 * minuteHeightPx - renderVerticalOffset
-                drawRect(
-                    hourDividerColor,
-                    Offset(0f, y),
-                    Size(timeRailPx, hourDividerHeight),
-                )
-                drawIntoCanvas { canvas ->
-                    chromePaint.textSize = with(density) { 16.sp.toPx() }
-                    canvas.nativeCanvas.drawText(
-                        hourFormatter.format(windowStart.plus(Duration.ofHours(hour.toLong()))),
-                        with(density) { 10.dp.toPx() },
-                        y + with(density) { 22.dp.toPx() },
-                        chromePaint,
-                    )
-                }
-            }
-        }
     }
+
+    native?.restore()
 }
 
 private fun drawEllipsized(
@@ -1229,8 +1365,8 @@ private fun drawEllipsized(
     canvas.drawText(rendered, x, y, paint)
 }
 
-private fun drawWrappedText(
-    canvas: android.graphics.Canvas,
+private fun GuideTextCache.drawWrappedText(
+    canvas: android.graphics.Canvas?,
     text: String,
     x: Float,
     firstBaseline: Float,
@@ -1239,28 +1375,11 @@ private fun drawWrappedText(
     maxLines: Int,
     lineHeight: Float,
 ): Float {
-    var remaining = text.trim()
+    val lines = lines(text, maxWidth, paint, maxLines)
     var baseline = firstBaseline
-    repeat(maxLines) { line ->
-        if (remaining.isEmpty()) return baseline
-        val count = paint.breakText(remaining, true, maxWidth, null).coerceAtLeast(1)
-        val hasMore = count < remaining.length
-        val source = if (line == maxLines - 1 && hasMore) remaining else remaining.take(count)
-        val rendered =
-            if (line == maxLines - 1 && hasMore) {
-                android.text.TextUtils
-                    .ellipsize(
-                        source,
-                        android.text.TextPaint(paint),
-                        maxWidth,
-                        android.text.TextUtils.TruncateAt.END,
-                    ).toString()
-            } else {
-                source
-            }
-        canvas.drawText(rendered, x, baseline, paint)
+    lines.forEach { rendered ->
+        canvas?.drawText(rendered, x, baseline, paint)
         baseline += lineHeight
-        remaining = remaining.drop(count).trimStart()
     }
     return baseline
 }
@@ -1343,3 +1462,151 @@ private fun currentBroadcastDate(): LocalDate =
     LocalDate.now().let { date ->
         if (LocalTime.now().hour < GuideTimeline.broadcastDayStartHour) date.minusDays(1) else date
     }
+
+private class GuideTextCache {
+    private data class TextKey(
+        val text: String,
+        val width: Float,
+        val size: Float,
+        val typeface: android.graphics.Typeface?,
+        val maxLines: Int,
+    )
+
+    private val layouts = android.util.LruCache<TextKey, List<String>>(512)
+    private val times = android.util.LruCache<Pair<Instant, Instant>, String>(256)
+
+    fun timeRange(
+        start: Instant,
+        end: Instant,
+    ): String {
+        val key = start to end
+        return times.get(key) ?: run {
+            "${timeFormatter.format(start)}–${timeFormatter.format(end)}".also { times.put(key, it) }
+        }
+    }
+
+    fun lines(
+        text: String,
+        width: Float,
+        paint: android.graphics.Paint,
+        maxLines: Int,
+    ): List<String> {
+        val key = TextKey(text, width, paint.textSize, paint.typeface, maxLines)
+        layouts.get(key)?.let { return it }
+        val result =
+            buildList {
+                var remaining = text.trim()
+                repeat(maxLines) { line ->
+                    if (remaining.isEmpty()) return@buildList
+                    val count =
+                        paint.breakText(remaining, true, width, null).coerceAtLeast(1)
+                    add(
+                        if (line == maxLines - 1 && count < remaining.length) {
+                            android.text.TextUtils
+                                .ellipsize(
+                                    remaining,
+                                    android.text.TextPaint(paint),
+                                    width,
+                                    android.text.TextUtils.TruncateAt.END,
+                                ).toString()
+                        } else {
+                            remaining.take(count)
+                        },
+                    )
+                    remaining = remaining.drop(count).trimStart()
+                }
+            }
+        layouts.put(key, result)
+        return result
+    }
+}
+
+internal fun guideTilesToPrepare(
+    stations: IntRange,
+    tiles: LongRange,
+    stationCount: Int,
+    tileCount: Long,
+    capacity: Int,
+    margin: Int,
+): List<Pair<Int, Long>> {
+    if (stations.isEmpty() || tiles.isEmpty()) return emptyList()
+    val centerStation = (stations.first + stations.last) / 2.0
+    val centerTile = (tiles.first + tiles.last) / 2.0
+    return buildList {
+        for (station in maxOf(0, stations.first - margin)..minOf(stationCount - 1, stations.last + margin)) {
+            for (tile in maxOf(0, tiles.first - margin)..minOf(tileCount - 1, tiles.last + margin)) {
+                add(station to tile)
+            }
+        }
+    }.sortedWith(
+        compareBy<Pair<Int, Long>> { (station, tile) -> if (station in stations && tile in tiles) 0 else 1 }
+            .thenBy { (station, tile) -> abs(station - centerStation) + abs(tile - centerTile) },
+    ).take(capacity)
+}
+
+internal class GuideDrawCache(
+    maxBytes: Int,
+) {
+    private data class Key(
+        val content: Any,
+        val width: Float,
+        val height: Float,
+    )
+
+    // A recorded frame may still reference an evicted bitmap; do not recycle it here.
+    private val bitmaps =
+        object : android.util.LruCache<Key, Bitmap>(maxBytes) {
+            override fun sizeOf(
+                key: Key,
+                value: Bitmap,
+            ): Int = value.allocationByteCount
+        }
+
+    fun clear() = bitmaps.evictAll()
+
+    fun capacity(
+        width: Float,
+        height: Float,
+    ): Int = (bitmaps.maxSize() / (ceil(width).toInt() * ceil(height).toInt() * 4)).coerceAtLeast(1)
+
+    fun prepare(
+        density: androidx.compose.ui.unit.Density,
+        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+        contentKey: Any,
+        width: Float,
+        height: Float,
+        content: DrawScope.() -> Unit,
+    ): Bitmap {
+        val key = Key(contentKey, width, height)
+        return bitmaps.get(key) ?: Bitmap
+            .createBitmap(
+                ceil(width).toInt(),
+                ceil(height).toInt(),
+                Bitmap.Config.ARGB_8888,
+            ).also { bitmap ->
+                CanvasDrawScope().draw(
+                    density,
+                    layoutDirection,
+                    androidx.compose.ui.graphics
+                        .Canvas(android.graphics.Canvas(bitmap)),
+                    Size(width, height),
+                    content,
+                )
+                bitmap.prepareToDraw()
+                bitmaps.put(key, bitmap)
+            }
+    }
+
+    fun draw(
+        scope: DrawScope,
+        contentKey: Any,
+        width: Float,
+        height: Float,
+        left: Float,
+        top: Float,
+        content: DrawScope.() -> Unit,
+    ) {
+        val bitmap = prepare(scope, scope.layoutDirection, contentKey, width, height, content)
+        scope.drawIntoCanvas { it.nativeCanvas.drawBitmap(bitmap, left, top, null) }
+    }
+}

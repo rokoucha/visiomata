@@ -157,18 +157,31 @@ data class ProgramGuide(
 
     fun schedule(service: Service): List<Program> = programsByService[service.key].orEmpty()
 
+    private val stationGroups by lazy { services.groupBy { it.stationGroupKey() }.values.toList() }
+
+    // A guide is a snapshot: filtering simulcasts must not run again for every drawn frame.
+    private val displaySchedules by lazy {
+        buildMap {
+            stationGroups.forEach { group ->
+                val primary = group.primaryService()
+                val primarySchedule = schedule(primary)
+                put(primary.key, primarySchedule)
+                val secondary = group.filter { it != primary }
+                if (secondary.isNotEmpty()) {
+                    val simulcasts = SimulcastIndex(primarySchedule)
+                    secondary.forEach { service ->
+                        put(service.key, schedule(service).filterNot(simulcasts::contains))
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * Schedule shown in a station-level guide. A primary service keeps its full
      * schedule; a subchannel keeps only programmes that differ from the primary.
      */
-    fun displaySchedule(service: Service): List<Program> {
-        val group = services.filter { it.stationGroupKey() == service.stationGroupKey() }
-        val primary = group.primaryService()
-        val serviceSchedule = schedule(service)
-        if (service == primary) return serviceSchedule
-        val primarySchedule = schedule(primary)
-        return serviceSchedule.filter { sub -> primarySchedule.none { it.isSameBroadcastAs(sub) } }
-    }
+    fun displaySchedule(service: Service): List<Program> = displaySchedules[service.key].orEmpty()
 
     /**
      * Services suitable for station-level lists such as an EPG.
@@ -179,24 +192,22 @@ data class ProgramGuide(
      * the same transport stream are collapsed, so unrelated services sharing a
      * transponder remain visible.
      */
-    val primaryServices: List<Service>
-        get() =
-            services.groupBy { it.stationGroupKey() }.values.map { group ->
-                group.minWithOrNull(compareBy<Service>({ it.aribServiceNumber }, { it.serviceId }))!!
-            }
+    val primaryServices: List<Service> by lazy {
+        stationGroups.map { it.primaryService() }
+    }
 
-    val servicesWithDistinctProgramming: List<Service>
-        get() =
-            services.groupBy { it.stationGroupKey() }.values.flatMap { group ->
-                val primary = group.primaryService()
-                listOf(primary) +
-                    group
-                        .asSequence()
-                        .filter { it != primary }
-                        .filter { displaySchedule(it).isNotEmpty() }
-                        .sortedBy { it.serviceId }
-                        .toList()
-            }
+    val servicesWithDistinctProgramming: List<Service> by lazy {
+        stationGroups.flatMap { group ->
+            val primary = group.primaryService()
+            listOf(primary) +
+                group
+                    .asSequence()
+                    .filter { it != primary }
+                    .filter { displaySchedule(it).isNotEmpty() }
+                    .sortedBy { it.serviceId }
+                    .toList()
+        }
+    }
 
     /**
      * Builds a stable render snapshot while a neighbouring guide window is being loaded.
@@ -300,6 +311,35 @@ private val Service.aribServiceNumber: Int
 
 private fun List<Service>.primaryService(): Service =
     minWithOrNull(compareBy<Service>({ it.aribServiceNumber }, { it.serviceId }))!!
+
+private class SimulcastIndex(
+    schedule: List<Program>,
+) {
+    private val allKeys = mutableSetOf<ProgramKey>()
+    private val sharedKeys = mutableSetOf<ProgramKey>()
+    private val standaloneByTitle = mutableMapOf<String, MutableList<Program>>()
+
+    init {
+        schedule.forEach { program ->
+            val group = program.eventCommonGroup()
+            allKeys.addAll(group)
+            if (group.size > 1) {
+                sharedKeys.addAll(group)
+            } else {
+                standaloneByTitle.getOrPut(program.title.normalizedForComparison()) { mutableListOf() }.add(program)
+            }
+        }
+    }
+
+    fun contains(program: Program): Boolean {
+        val group = program.eventCommonGroup()
+        if (group.size > 1) return group.any { it in allKeys }
+        if (group.single() in sharedKeys) return true
+        return standaloneByTitle[program.title.normalizedForComparison()].orEmpty().any {
+            it.startAt < program.endAt && program.startAt < it.endAt
+        }
+    }
+}
 
 private fun Program.isSameBroadcastAs(other: Program): Boolean {
     val ownGroup = eventCommonGroup()

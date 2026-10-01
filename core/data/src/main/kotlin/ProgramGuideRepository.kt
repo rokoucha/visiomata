@@ -173,7 +173,7 @@ class ProgramGuideRepository(
             ),
         ) { services, programs ->
             ProgramGuide(services.map { it.toModel() }, programs.map { it.toModel() })
-        }
+        }.flowOn(Dispatchers.Default)
 
     suspend fun refreshGuide(
         settings: MirakurunSettings,

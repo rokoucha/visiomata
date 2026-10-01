@@ -1,6 +1,7 @@
 package net.rokoucha.visiomata.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Test
 import java.time.Instant
 
@@ -165,6 +166,30 @@ class ProgramGuideTest {
     }
 
     @Test
+    fun `reuses display schedules within a snapshot and refreshes them on copy`() {
+        val main = service(10, 16, "GR", 100, remoteControlKeyId = 9)
+        val sub = service(20, 17, "GR", 100, remoteControlKeyId = 9)
+        val mainProgram = program(main, title = "News")
+        val subProgram = program(sub, title = "Sports")
+        val guide = ProgramGuide(listOf(main, sub), listOf(mainProgram, subProgram))
+        val schedule = guide.displaySchedule(sub)
+        val visibleServices = guide.servicesWithDistinctProgramming
+
+        repeat(100) {
+            assertSame(schedule, guide.displaySchedule(sub))
+            assertSame(visibleServices, guide.servicesWithDistinctProgramming)
+        }
+        val updated = guide.copy(programs = listOf(mainProgram, subProgram.copy(title = "News")))
+        assertEquals(emptyList<Program>(), updated.displaySchedule(sub))
+        assertEquals(listOf(main), updated.servicesWithDistinctProgramming)
+        assertEquals(listOf(subProgram), guide.displaySchedule(sub))
+
+        val regrouped = guide.copy(services = listOf(sub))
+        assertEquals(listOf(subProgram), regrouped.displaySchedule(sub))
+        assertEquals(listOf(sub), regrouped.servicesWithDistinctProgramming)
+    }
+
+    @Test
     fun `small EIT timing differences do not expose a simulcast subchannel`() {
         val main = service(10, 16, "GR", 100, remoteControlKeyId = 9)
         val sub = service(20, 17, "GR", 100, remoteControlKeyId = 9)
@@ -191,6 +216,39 @@ class ProgramGuideTest {
         val guide = ProgramGuide(listOf(main, sub), listOf(mainProgram, subProgram))
 
         assertEquals(emptyList<Program>(), guide.displaySchedule(sub))
+    }
+
+    @Test
+    fun `simulcast index preserves one sided shared relations without title fallback`() {
+        val main = service(10, 16, "GR", 100, remoteControlKeyId = 9)
+        val sub = service(20, 17, "GR", 100, remoteControlKeyId = 9)
+        val common = RelatedProgram("shared", 1, 100, 99, 900)
+        val primary = program(main, eventId = 100, title = "News").copy(relatedPrograms = listOf(common))
+        val linked = program(sub, eventId = 200, title = "Different").copy(relatedPrograms = listOf(common))
+        val sameTitle = program(sub, eventId = 201, title = "News")
+        val directlyLinked = primary.copy(relatedPrograms = listOf(RelatedProgram("shared", 1, 100, 17, 201)))
+
+        assertEquals(
+            listOf(sameTitle),
+            ProgramGuide(listOf(main, sub), listOf(primary, linked, sameTitle)).displaySchedule(sub),
+        )
+        assertEquals(
+            emptyList<Program>(),
+            ProgramGuide(listOf(main, sub), listOf(directlyLinked, sameTitle)).displaySchedule(sub),
+        )
+    }
+
+    @Test
+    fun `simulcast title index keeps non overlapping repeats and distinct programs`() {
+        val main = service(10, 16, "GR", 100, remoteControlKeyId = 9)
+        val sub = service(20, 17, "GR", 100, remoteControlKeyId = 9)
+        val primary = program(main, title = " News　 Update ")
+        val simulcast = program(sub, eventId = 200, title = "News Update")
+        val later = program(sub, eventId = 201, title = "News Update", offsetMinutes = 60)
+        val distinct = program(sub, eventId = 202, title = "Sports")
+        val guide = ProgramGuide(listOf(main, sub), listOf(primary, simulcast, later, distinct))
+
+        assertEquals(listOf(distinct, later), guide.displaySchedule(sub))
     }
 
     @Test
