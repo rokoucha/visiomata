@@ -530,9 +530,9 @@ fun TvHomeScreen(
     channelTypes: List<ChannelType> = choices.map { it.channelType }.distinct(),
     loadLogo: suspend (Long, Int?) -> ByteArray? = { _, _ -> null },
     isLoadingChannel: Boolean = false,
+    isActive: Boolean = true,
 ) {
     val initialCardFocusRequester = remember { FocusRequester() }
-    var initialCardFocusRequested by remember { mutableStateOf(false) }
     val rows =
         remember(choices, channelTypes) {
             val choicesByType = choices.groupBy { it.channelType }
@@ -550,10 +550,10 @@ fun TvHomeScreen(
             ?.second
             ?.firstOrNull()
             ?.id
-    LaunchedEffect(firstChoiceId) {
-        if (!initialCardFocusRequested && firstChoiceId != null) {
+    LaunchedEffect(firstChoiceId, isActive) {
+        if (isActive && firstChoiceId != null) {
             withFrameNanos { }
-            initialCardFocusRequested = initialCardFocusRequester.requestFocus()
+            initialCardFocusRequester.requestFocus()
         }
     }
     Column(
@@ -578,12 +578,18 @@ fun TvHomeScreen(
             ) {
                 androidx.tv.material3.Button(
                     onClick = onGuide,
-                    modifier = Modifier.focusRequester(guideFocusRequester),
+                    modifier =
+                        Modifier
+                            .focusRequester(guideFocusRequester)
+                            .focusProperties { canFocus = isActive },
+                    enabled = isActive,
                 ) {
                     androidx.tv.material3.Text("番組表")
                 }
                 androidx.tv.material3.Button(
                     onClick = onSettings,
+                    modifier = Modifier.focusProperties { canFocus = isActive },
+                    enabled = isActive,
                 ) {
                     androidx.tv.material3.Text("設定")
                 }
@@ -615,6 +621,7 @@ fun TvHomeScreen(
                                         ?: FocusRequester.Cancel,
                                 initialCardFocusRequester = initialCardFocusRequester,
                                 isInitialRow = typeChoices.first().id == firstChoiceId,
+                                isActive = isActive,
                             )
                         }
                     }
@@ -639,6 +646,7 @@ private fun TvChannelTypeRow(
     nextRow: FocusRequester,
     initialCardFocusRequester: FocusRequester,
     isInitialRow: Boolean,
+    isActive: Boolean,
 ) {
     val rowState = rememberLazyListState()
     val horizontalInset = with(LocalDensity.current) { 64.dp.toPx() }
@@ -675,10 +683,12 @@ private fun TvChannelTypeRow(
                         choice,
                         onPlay,
                         loadLogo,
+                        isActive,
                         Modifier
                             .focusRequester(requesters.getValue(choice.id))
                             .onFocusChanged { if (it.isFocused) selectedId.value = choice.id }
                             .focusProperties {
+                                canFocus = isActive
                                 up = previousRow
                                 down = nextRow
                                 if (index == 0) left = FocusRequester.Cancel
@@ -696,6 +706,7 @@ private fun TvServiceCard(
     choice: ServiceGroup,
     onPlay: (Long) -> Unit,
     loadLogo: suspend (Long, Int?) -> ByteArray?,
+    isActive: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -716,8 +727,9 @@ private fun TvServiceCard(
                     drawRect(if (focused.value) focusedContainerColor else containerColor)
                     if (focused.value) drawOutline(outline, focusedBorderColor, style = border)
                 }
-            }.clickable(interactionSource = interaction, indication = null) { onPlay(choice.primaryServiceId) }
-            .padding(14.dp),
+            }.clickable(enabled = isActive, interactionSource = interaction, indication = null) {
+                onPlay(choice.primaryServiceId)
+            }.padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         ServiceIdentity(choice, loadLogo, focusState = focused)

@@ -92,6 +92,11 @@ fun TvSettingsScreen(
     val versionInfoCategoryFocusRequester = remember { FocusRequester() }
     val detailFocusRequester = remember { FocusRequester() }
 
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        mirakurunCategoryFocusRequester.requestFocus()
+    }
+
     fun categoryFocusRequester() =
         when (category) {
             TvSettingsCategory.Mirakurun -> mirakurunCategoryFocusRequester

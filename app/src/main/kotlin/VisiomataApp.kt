@@ -515,6 +515,7 @@ private fun TvVisiomataApp(
             ConnectedTvHome(
                 settings = settings,
                 homeState = homeState,
+                isActive = currentRoute == HomeRoute,
                 onPlay = openPlayer,
                 onGuide = { backStack.add(GuideRoute) },
                 onSettings = { backStack.add(SettingsRoute) },
@@ -845,6 +846,7 @@ private fun ConnectedHandheldHome(
 private fun ConnectedTvHome(
     settings: MirakurunSettings,
     homeState: HomeState?,
+    isActive: Boolean,
     onPlay: (Long) -> Unit,
     onGuide: () -> Unit,
     onSettings: () -> Unit,
@@ -875,6 +877,7 @@ private fun ConnectedTvHome(
                 channelTypes = state.channelTypes,
                 loadLogo = homeState.loadLogo,
                 isLoadingChannel = homeState.isLoadingChannel,
+                isActive = isActive,
             )
         }
 
