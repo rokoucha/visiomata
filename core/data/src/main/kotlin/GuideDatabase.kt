@@ -112,6 +112,8 @@ internal interface GuideDao {
         ORDER BY programs.startAt, programs.id
     """,
     )
+    // CursorWindow refills must see the same snapshot while guide updates write rows.
+    @Transaction
     fun observeGuidePrograms(
         source: String,
         channelType: String,
