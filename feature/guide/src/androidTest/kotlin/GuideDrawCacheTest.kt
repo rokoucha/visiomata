@@ -16,6 +16,8 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Rule
 import org.junit.Test
 
@@ -37,6 +39,24 @@ class GuideDrawCacheTest {
         val pixels = compose.onNodeWithTag("guide").captureToImage().toPixelMap()
         assertEquals(Color.Red, pixels[pixels.width / 4, pixels.height / 2])
         assertEquals(Color.Blue, pixels[pixels.width * 3 / 4, pixels.height / 2])
+    }
+
+    @Test
+    fun changedContentReplacesOnlyItsOwnCachedTile() {
+        val cache = GuideDrawCache(1024 * 1024)
+        val density =
+            androidx.compose.ui.unit
+                .Density(1f)
+        val direction = androidx.compose.ui.unit.LayoutDirection.Ltr
+        val first = cache.prepare(density, direction, "first", 40f, 40f) { drawRect(Color.Red) }
+        val second = cache.prepare(density, direction, "second", 40f, 40f) { drawRect(Color.Blue) }
+        val updated = cache.prepare(density, direction, "updated", 40f, 40f) { drawRect(Color.Green) }
+        assertNotSame(first, updated)
+        assertEquals(android.graphics.Color.GREEN, updated.getPixel(20, 20))
+        assertSame(
+            second,
+            cache.prepare(density, direction, "second", 40f, 40f) { error("Unchanged tile was redrawn") },
+        )
     }
 
     @Test

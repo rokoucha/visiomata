@@ -651,8 +651,9 @@ private fun VirtualizedGuide(
     val surface = MaterialTheme.colorScheme.surface
     val surfaceContainer = MaterialTheme.colorScheme.surfaceContainer
     val colorScheme = MaterialTheme.colorScheme
+    // Content keys invalidate changed tiles without blanking the guide during live updates.
     val cardCache =
-        remember(guide, windowStart, density, colorScheme, isTv) { GuideDrawCache(32 * 1024 * 1024) }
+        remember(windowStart, windowEnd, density, colorScheme, isTv) { GuideDrawCache(32 * 1024 * 1024) }
     val headerCache = remember(density, colorScheme, isTv) { GuideDrawCache(8 * 1024 * 1024) }
     var textPrepared by remember(cardCache, services.isEmpty()) { mutableStateOf(services.isEmpty()) }
     val tileMinutes = 120L
@@ -761,18 +762,25 @@ private fun VirtualizedGuide(
         }
     }
 
-    fun DrawScope.drawTile(
+    fun tileContent(
         service: Service,
         tileStart: Instant,
+    ): GuideTileContent =
+        guideTileContent(
+            guide.displaySchedule(service),
+            tileStart,
+            minOf(tileStart.plusSeconds(tileMinutes * 60), windowEnd),
+        )
+
+    fun DrawScope.drawTile(
+        tile: GuideTileContent,
         titlePaint: android.graphics.Paint,
         secondaryPaint: android.graphics.Paint,
     ) {
-        val tileEnd = minOf(tileStart.plusSeconds(tileMinutes * 60), windowEnd)
         clipRect {
-            guide.displaySchedule(service).forEach { program ->
-                if (program.endAt <= tileStart || program.startAt >= tileEnd) return@forEach
+            tile.programs.forEach { program ->
                 val clippedStart = maxOf(program.startAt, windowStart)
-                val top = Duration.between(tileStart, clippedStart).toMinutes() * minuteHeightPx
+                val top = Duration.between(tile.start, clippedStart).toMinutes() * minuteHeightPx
                 val height =
                     Duration
                         .between(clippedStart, minOf(program.endAt, windowEnd))
@@ -950,7 +958,7 @@ private fun VirtualizedGuide(
         }
     }
 
-    LaunchedEffect(cardCache, windowEnd, layoutDirection) {
+    LaunchedEffect(cardCache, guide, windowEnd, layoutDirection) {
         snapshotFlow { GuideViewport(horizontalOffset, renderVerticalOffset(), viewportWidth, viewportHeight) }
             .collectLatest { viewport ->
                 if (viewport.width <= 0f || viewport.height <= 0f || services.isEmpty()) return@collectLatest
@@ -979,14 +987,15 @@ private fun VirtualizedGuide(
                             currentCoroutineContext().ensureActive()
                             val service = services[station]
                             val tileStart = windowStart.plusSeconds(tile * tileMinutes * 60)
+                            val content = tileContent(service, tileStart)
                             cardCache.prepare(
                                 density,
                                 layoutDirection,
-                                service.id to tileStart,
+                                content,
                                 stationWidthPx,
                                 tileHeight,
                             ) {
-                                drawTile(service, tileStart, preparedTitlePaint, preparedSecondaryPaint)
+                                drawTile(content, preparedTitlePaint, preparedSecondaryPaint)
                             }
                         }
                     }
@@ -1129,8 +1138,9 @@ private fun VirtualizedGuide(
                     for (tile in firstTile..lastTile) {
                         val tileStart = windowStart.plusSeconds(tile * tileMinutes * 60)
                         val tileTop = headerHeightPx + tile * tileHeight - renderVerticalOffset
-                        cardCache.draw(this, service.id to tileStart, stationWidthPx, tileHeight, left, tileTop) {
-                            drawTile(service, tileStart, titlePaint, secondaryPaint)
+                        val content = tileContent(service, tileStart)
+                        cardCache.draw(this, content, stationWidthPx, tileHeight, left, tileTop) {
+                            drawTile(content, titlePaint, secondaryPaint)
                         }
                     }
 
@@ -1547,6 +1557,17 @@ internal fun guideTilesToPrepare(
             .thenBy { (station, tile) -> abs(station - centerStation) + abs(tile - centerTile) },
     ).take(capacity)
 }
+
+internal data class GuideTileContent(
+    val start: Instant,
+    val programs: List<Program>,
+)
+
+internal fun guideTileContent(
+    schedule: List<Program>,
+    start: Instant,
+    end: Instant,
+): GuideTileContent = GuideTileContent(start, schedule.filter { it.endAt > start && it.startAt < end })
 
 internal class GuideDrawCache(
     maxBytes: Int,
