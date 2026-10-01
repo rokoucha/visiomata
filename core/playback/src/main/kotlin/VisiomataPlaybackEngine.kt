@@ -398,8 +398,8 @@ internal class VisiomataPlaybackEngine(
                 .setBufferDurationsMs(
                     config.memoryPolicy.minBufferMs,
                     config.memoryPolicy.maxBufferMs,
-                    2_500,
-                    2_500,
+                    PlaybackMemoryPolicy.LIVE_PLAYBACK_BUFFER_MS,
+                    PlaybackMemoryPolicy.LIVE_REBUFFER_MS,
                 ).setTargetBufferBytes(config.memoryPolicy.targetBufferBytes)
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build(),

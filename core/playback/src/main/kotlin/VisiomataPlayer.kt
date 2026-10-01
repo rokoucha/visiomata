@@ -49,6 +49,8 @@ import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.rokoucha.visiomata.playback.R
 import net.rokoucha.visiomata.playback.bml.BmlWebView
@@ -161,7 +163,7 @@ private fun prepareAribCaptionFont(
     return destination
 }
 
-private fun systemSymbolFontPaths(): List<String> =
+private val systemSymbolFontPaths: List<String> by lazy {
     runCatching {
         SystemFonts
             .getAvailableFonts()
@@ -176,6 +178,27 @@ private fun systemSymbolFontPaths(): List<String> =
         Log.w("VisiomataPlayer", "端末の記号フォントを列挙できませんでした", error)
         emptyList()
     }
+}
+
+private val playbackFontMutex = Mutex()
+
+@Volatile private var cachedPlaybackFontFiles: List<String>? = null
+
+private suspend fun playbackFontFiles(context: Context): List<String> =
+    cachedPlaybackFontFiles ?: playbackFontMutex.withLock {
+        cachedPlaybackFontFiles ?: (
+            aribFontAssetPaths.map { prepareAribCaptionFont(context.applicationContext, it).absolutePath } +
+                systemSymbolFontPaths
+        ).also { cachedPlaybackFontFiles = it }
+    }
+
+/** Warms device-specific playback resources while the TV home screen is idle. */
+suspend fun preloadVisiomataPlayer(context: Context) {
+    withContext(Dispatchers.IO) {
+        playbackFontFiles(context)
+        Mpeg2DecoderCapabilities.hasHardwareDecoder
+    }
+}
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -228,9 +251,7 @@ fun VisiomataPlayer(
     LaunchedEffect(forceMpeg2Transcoding, forceHardwareAvcDecoder) {
         playbackSetup =
             withContext(Dispatchers.IO) {
-                val fontFiles =
-                    aribFontAssetPaths.map { prepareAribCaptionFont(context, it).absolutePath } +
-                        systemSymbolFontPaths()
+                val fontFiles = playbackFontFiles(context)
                 val transcode = forceMpeg2Transcoding ?: !Mpeg2DecoderCapabilities.hasHardwareDecoder
                 // Auto leaves the choice to MediaCodec for now. Devices whose hardware decoder
                 // cannot handle MBAFF need the software decoder picked by hand.
@@ -553,11 +574,15 @@ fun VisiomataPlayer(
                             ),
                         )
                         // Create Chromium only after the stream announces BML content. Both sources
-                        // retain messages until the page attaches its consumer.
+                        // retain messages until the page attaches its consumer. Let video establish
+                        // its live buffer first because Chromium startup can otherwise rebuffer it.
+                        var bmlInitializationPosted = false
                         bmlMessageSource?.setOnContentAvailable {
-                            post {
+                            if (bmlInitializationPosted) return@setOnContentAvailable
+                            bmlInitializationPosted = true
+                            postDelayed({
                                 if (!isAttachedToWindow || bmlWebView != null) {
-                                    return@post
+                                    return@postDelayed
                                 }
                                 Trace.beginSection("BML deferred WebView init")
                                 try {
@@ -601,7 +626,7 @@ fun VisiomataPlayer(
                                 } finally {
                                     Trace.endSection()
                                 }
-                            }
+                            }, BML_WEB_VIEW_DELAY_MS)
                         }
                     }
                 },
@@ -667,6 +692,8 @@ fun VisiomataPlayer(
         }
     }
 }
+
+private const val BML_WEB_VIEW_DELAY_MS = 5_000L
 
 private fun audioTrackId(
     group: Tracks.Group,

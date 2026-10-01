@@ -73,6 +73,7 @@ import net.rokoucha.visiomata.playback.PlayerProgramDetail
 import net.rokoucha.visiomata.playback.PlayerProgramInfo
 import net.rokoucha.visiomata.playback.PlayerScreen
 import net.rokoucha.visiomata.playback.PlayerUpcomingProgram
+import net.rokoucha.visiomata.playback.preloadPlayerScreen
 import net.rokoucha.visiomata.settings.AppVersionInfo
 import net.rokoucha.visiomata.settings.DataBroadcastingSettingsScreen
 import net.rokoucha.visiomata.settings.LibraryLicenseUiModel
@@ -485,6 +486,9 @@ private fun TvVisiomataApp(
 ) {
     val backStack = rememberNavBackStack(navSavedStateConfiguration, HomeRoute)
     val context = LocalContext.current
+    LaunchedEffect(context) {
+        preloadPlayerScreen(context)
+    }
     val settings by settingsUseCases.settings.collectAsState()
     val homeState =
         if (settings.url.isBlank()) {

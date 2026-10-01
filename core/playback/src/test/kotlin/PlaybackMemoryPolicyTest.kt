@@ -15,6 +15,8 @@ class PlaybackMemoryPolicyTest {
         assertEquals(PlaybackMemoryPolicy.LIVE_MIN_BUFFER_MS, standard.minBufferMs)
         assertEquals(PlaybackMemoryPolicy.LIVE_MAX_BUFFER_MS, lowRam.maxBufferMs)
         assertEquals(PlaybackMemoryPolicy.LIVE_MAX_BUFFER_MS, standard.maxBufferMs)
+        assertTrue(PlaybackMemoryPolicy.LIVE_PLAYBACK_BUFFER_MS < lowRam.minBufferMs)
+        assertTrue(PlaybackMemoryPolicy.LIVE_REBUFFER_MS >= lowRam.minBufferMs)
     }
 
     @Test

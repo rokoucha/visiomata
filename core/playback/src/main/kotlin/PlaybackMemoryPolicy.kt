@@ -25,6 +25,8 @@ internal data class PlaybackMemoryPolicy(
          */
         const val LIVE_MIN_BUFFER_MS = 2_500
         const val LIVE_MAX_BUFFER_MS = 8_000
+        const val LIVE_PLAYBACK_BUFFER_MS = 1_500
+        const val LIVE_REBUFFER_MS = 2_500
 
         fun from(context: Context): PlaybackMemoryPolicy {
             val activityManager = context.getSystemService(ActivityManager::class.java)

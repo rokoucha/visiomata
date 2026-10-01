@@ -132,6 +132,8 @@ data class PlayerUpcomingProgram(
     val description: String = "",
 )
 
+suspend fun preloadPlayerScreen(context: Context) = preloadVisiomataPlayer(context)
+
 @Composable
 fun PlayerScreen(
     url: String,
