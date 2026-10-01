@@ -3,6 +3,7 @@ package net.rokoucha.visiomata
 import android.content.res.Configuration
 import android.util.Log
 import android.widget.Toast
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
@@ -485,6 +486,12 @@ private fun TvVisiomataApp(
     val backStack = rememberNavBackStack(navSavedStateConfiguration, HomeRoute)
     val context = LocalContext.current
     val settings by settingsUseCases.settings.collectAsState()
+    val homeState =
+        if (settings.url.isBlank()) {
+            null
+        } else {
+            rememberHomeState(settings, guideUseCases)
+        }
     val libraries = rememberLibraryLicenses()
     val versionInfo = rememberAppVersionInfo()
     val maintenance =
@@ -498,82 +505,82 @@ private fun TvVisiomataApp(
     LaunchedEffect(currentRoute) {
         guideUseCases.setPlaybackActive(currentRoute == PlayerRoute)
     }
-    NavDisplay(
-        backStack = backStack,
-        onBack = { backStack.popLastIfNotRoot() },
-        modifier = modifier,
-        entryProvider =
-            entryProvider {
-                entry<HomeRoute> {
-                    AppTheme(isTv = true) {
-                        ConnectedTvHome(
-                            settings = settings,
-                            guideUseCases = guideUseCases,
-                            onPlay = { serviceId ->
-                                guideUseCases.setPlaybackActive(true)
-                                selectedServiceId = serviceId
-                                backStack.add(PlayerRoute)
-                            },
-                            onGuide = { backStack.add(GuideRoute) },
-                            onSettings = { backStack.add(SettingsRoute) },
-                        )
-                    }
-                }
-                entry<SettingsRoute> {
-                    AppTheme(isTv = true) {
-                        TvSettingsScreen(
-                            settings = settings,
-                            onSettingsChange = settingsUseCases::update,
-                            onConnectionSettingsChange = {
-                                settingsUseCases.update(it)
-                                maintenance.markNeedsCheck(it)
-                            },
-                            connectionState = maintenance.connectionState,
-                            isRefreshingGuide = maintenance.isRefreshingGuide,
-                            onCheckConnection = { value ->
-                                maintenanceScope.launch { maintenance.checkConnection(value) }
-                            },
-                            onRefreshGuide = { value ->
-                                maintenanceScope.launch {
-                                    val message = maintenance.refreshGuide(value) ?: return@launch
-                                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-                                }
-                            },
-                            libraries = libraries,
-                            versionInfo = versionInfo,
-                            onSendFeedback = appDistributionFeedbackAction(),
-                            onBack = { backStack.popLastIfNotRoot() },
-                        )
-                    }
-                }
-                entry<GuideRoute> {
-                    VisiomataTheme {
-                        ConnectedProgramGuide(
-                            settings = settings,
-                            guideUseCases = guideUseCases,
-                            isTv = true,
-                            onPlay = { serviceId ->
-                                guideUseCases.setPlaybackActive(true)
-                                selectedServiceId = serviceId
-                                backStack.add(PlayerRoute)
-                            },
-                            onConfigure = { backStack.add(SettingsRoute) },
-                        )
-                    }
-                }
-                entry<PlayerRoute> {
-                    VisiomataTheme {
-                        ConfiguredPlayerScreen(
-                            settings = settings,
-                            serviceId = selectedServiceId,
-                            guideUseCases = guideUseCases,
-                            playbackSessionUseCase = playbackSessionUseCase,
-                            onBack = { backStack.popIfCurrent(PlayerRoute) },
-                        )
-                    }
-                }
-            },
-    )
+    val openPlayer: (Long) -> Unit = { serviceId ->
+        guideUseCases.setPlaybackActive(true)
+        selectedServiceId = serviceId
+        backStack.add(PlayerRoute)
+    }
+    Box(modifier) {
+        AppTheme(isTv = true) {
+            ConnectedTvHome(
+                settings = settings,
+                homeState = homeState,
+                onPlay = openPlayer,
+                onGuide = { backStack.add(GuideRoute) },
+                onSettings = { backStack.add(SettingsRoute) },
+            )
+        }
+        if (currentRoute != HomeRoute) {
+            NavDisplay(
+                backStack = backStack,
+                onBack = { backStack.popLastIfNotRoot() },
+                modifier = Modifier.fillMaxSize(),
+                entryProvider =
+                    entryProvider {
+                        entry<HomeRoute> {}
+                        entry<SettingsRoute> {
+                            AppTheme(isTv = true) {
+                                TvSettingsScreen(
+                                    settings = settings,
+                                    onSettingsChange = settingsUseCases::update,
+                                    onConnectionSettingsChange = {
+                                        settingsUseCases.update(it)
+                                        maintenance.markNeedsCheck(it)
+                                    },
+                                    connectionState = maintenance.connectionState,
+                                    isRefreshingGuide = maintenance.isRefreshingGuide,
+                                    onCheckConnection = { value ->
+                                        maintenanceScope.launch { maintenance.checkConnection(value) }
+                                    },
+                                    onRefreshGuide = { value ->
+                                        maintenanceScope.launch {
+                                            val message = maintenance.refreshGuide(value) ?: return@launch
+                                            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    libraries = libraries,
+                                    versionInfo = versionInfo,
+                                    onSendFeedback = appDistributionFeedbackAction(),
+                                    onBack = { backStack.popLastIfNotRoot() },
+                                )
+                            }
+                        }
+                        entry<GuideRoute> {
+                            VisiomataTheme {
+                                ConnectedProgramGuide(
+                                    settings = settings,
+                                    guideUseCases = guideUseCases,
+                                    isTv = true,
+                                    onPlay = openPlayer,
+                                    onConfigure = { backStack.add(SettingsRoute) },
+                                )
+                            }
+                        }
+                        entry<PlayerRoute> {
+                            VisiomataTheme {
+                                ConfiguredPlayerScreen(
+                                    settings = settings,
+                                    serviceId = selectedServiceId,
+                                    guideUseCases = guideUseCases,
+                                    playbackSessionUseCase = playbackSessionUseCase,
+                                    onBack = { backStack.popIfCurrent(PlayerRoute) },
+                                )
+                            }
+                        }
+                    },
+            )
+        }
+    }
 }
 
 private fun appDistributionFeedbackAction(): (() -> Unit)? {
@@ -837,7 +844,7 @@ private fun ConnectedHandheldHome(
 @Composable
 private fun ConnectedTvHome(
     settings: MirakurunSettings,
-    guideUseCases: ProgramGuideUseCases,
+    homeState: HomeState?,
     onPlay: (Long) -> Unit,
     onGuide: () -> Unit,
     onSettings: () -> Unit,
@@ -850,7 +857,7 @@ private fun ConnectedTvHome(
         )
         return
     }
-    val homeState = rememberHomeState(settings, guideUseCases)
+    checkNotNull(homeState)
     when (val state = homeState.uiState) {
         HomeUiState.Loading -> {
             HomeLoadingIndicator()
