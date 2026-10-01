@@ -631,6 +631,7 @@ private fun VirtualizedGuide(
     var viewportHeight by remember { mutableFloatStateOf(0f) }
     var selectedStation by remember(services) { mutableIntStateOf(0) }
     var selectedProgram by remember(services) { mutableIntStateOf(0) }
+    var horizontalFocusRange by remember(services) { mutableStateOf<GuideFocusRange?>(null) }
     var hasInitialSelection by remember(services) { mutableStateOf(false) }
 
     // A window change is observed by composition one frame before LaunchedEffect can
@@ -811,7 +812,7 @@ private fun VirtualizedGuide(
             .coerceAtLeast(minVertical())
     }
 
-    fun keepSelectionVisible() {
+    fun keepSelectionVisible(preserveVerticalOffset: Boolean = false) {
         val stationLeft = selectedStation * stationWidthPx
         val stationRight = stationLeft + stationWidthPx
         val contentWidth = viewportWidth - timeRailPx
@@ -822,8 +823,14 @@ private fun VirtualizedGuide(
         val top = Duration.between(windowStart, program.startAt).toMinutes() * minuteHeightPx
         val bottom = Duration.between(windowStart, program.endAt).toMinutes() * minuteHeightPx
         val contentHeight = viewportHeight - headerHeightPx
-        if (top < verticalOffset) verticalOffset = top
-        if (bottom > verticalOffset + contentHeight) verticalOffset = bottom - contentHeight
+        verticalOffset =
+            revealProgramOffset(
+                verticalOffset,
+                contentHeight,
+                top,
+                bottom,
+                preserveVerticalOffset,
+            )
         horizontalOffset = horizontalOffset.coerceIn(0f, maxHorizontal())
         verticalOffset = verticalOffset.coerceIn(minVertical(), maxVertical())
     }
@@ -831,26 +838,22 @@ private fun VirtualizedGuide(
     fun moveVertical(delta: Int) {
         val schedule = services.getOrNull(selectedStation)?.let(guide::displaySchedule).orEmpty()
         selectedProgram = (selectedProgram + delta).coerceIn(0, (schedule.size - 1).coerceAtLeast(0))
+        horizontalFocusRange = schedule.getOrNull(selectedProgram)?.let(GuideFocusRange::of)
         keepSelectionVisible()
     }
 
     fun moveHorizontal(delta: Int) {
         val oldProgram = services.getOrNull(selectedStation)?.let(guide::displaySchedule)?.getOrNull(selectedProgram)
-        selectedStation = (selectedStation + delta).coerceIn(0, (services.size - 1).coerceAtLeast(0))
-        val schedule = services.getOrNull(selectedStation)?.let(guide::displaySchedule).orEmpty()
-        val midpoint = oldProgram?.let { it.startAt.plusMillis(Duration.between(it.startAt, it.endAt).toMillis() / 2) }
-        selectedProgram =
-            if (midpoint == null) {
-                0
-            } else {
-                schedule
-                    .indexOfFirst {
-                        midpoint >= it.startAt && midpoint < it.endAt
-                    }.takeIf { it >= 0 } ?: schedule.indices.minByOrNull {
-                    abs(Duration.between(midpoint, schedule[it].startAt).toMinutes())
-                } ?: 0
+        val focusRange = horizontalFocusRange ?: oldProgram?.let(GuideFocusRange::of)
+        if (focusRange != null) {
+            val schedules = services.map(guide::displaySchedule)
+            horizontalProgramSelection(schedules, selectedStation, delta, focusRange)?.let { (station, program) ->
+                selectedStation = station
+                selectedProgram = program
+                horizontalFocusRange = focusRange.intersecting(schedules[station][program])
+                keepSelectionVisible(preserveVerticalOffset = true)
             }
-        keepSelectionVisible()
+        }
     }
 
     LaunchedEffect(windowStart, windowEnd, rangeAnchorDate, availability, minuteHeightPx, headerHeightPx, zone) {
@@ -941,6 +944,7 @@ private fun VirtualizedGuide(
             val schedule = guide.displaySchedule(services[selectedStation])
             if (schedule.isNotEmpty()) {
                 selectedProgram = GuideTimeline.programIndexAt(schedule, initialFocusInstant)
+                horizontalFocusRange = schedule.getOrNull(selectedProgram)?.let(GuideFocusRange::of)
                 hasInitialSelection = true
             }
         }
