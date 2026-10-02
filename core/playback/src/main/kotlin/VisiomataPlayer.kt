@@ -225,6 +225,7 @@ fun VisiomataPlayer(
     remoteKeyEvents: Flow<BmlRemoteKeyEvent>? = null,
     reloadRequest: Int = 0,
     selectedAudioTrackId: String? = null,
+    subtitlesEnabled: Boolean = true,
     isInPictureInPictureMode: Boolean = false,
     onBmlInputStateChanged: (
         available: Boolean,
@@ -389,6 +390,13 @@ fun VisiomataPlayer(
                     .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
                     .build()
             }
+    }
+    LaunchedEffect(player, subtitlesEnabled) {
+        player.trackSelectionParameters =
+            player.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, !subtitlesEnabled)
+                .build()
     }
     LaunchedEffect(player, url, mediaTitle, mediaSubtitle, mediaArtworkData) {
         val mediaItem = liveMediaItem(url, mediaTitle, mediaSubtitle, mediaArtworkData)

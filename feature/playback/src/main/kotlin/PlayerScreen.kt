@@ -168,6 +168,7 @@ fun PlayerScreen(
     var bmlUsedKeyGroups by remember(url) { mutableStateOf(emptySet<String>()) }
     var audioTracks by remember(url) { mutableStateOf(emptyList<AudioTrackOption>()) }
     var selectedAudioTrackId by remember(url) { mutableStateOf<String?>(null) }
+    var subtitlesEnabled by rememberSaveable(url) { mutableStateOf(true) }
     var tvInputMode by remember(url) { mutableStateOf(TvInputMode.Player) }
     val remoteKeyEvents = remember(url) { MutableSharedFlow<BmlRemoteKeyEvent>(extraBufferCapacity = 16) }
     val sendRemoteKey: (String) -> Unit = { key ->
@@ -227,9 +228,11 @@ fun PlayerScreen(
             bmlUsedKeyGroups = bmlUsedKeyGroups,
             audioTracks = audioTracks,
             selectedAudioTrackId = selectedAudioTrackId,
+            subtitlesEnabled = subtitlesEnabled,
             tvInputMode = tvInputMode,
             onTvInputModeChanged = { tvInputMode = it },
             onAudioTrackSelected = { selectedAudioTrackId = it },
+            onSubtitlesEnabledChanged = { subtitlesEnabled = it },
             onRemoteKey = sendRemoteKey,
             onBack = onBack,
             onReload = reloadPlayer,
@@ -265,6 +268,7 @@ fun PlayerScreen(
                     remoteKeyEvents = remoteKeyEvents,
                     reloadRequest = reloadGeneration,
                     selectedAudioTrackId = selectedAudioTrackId,
+                    subtitlesEnabled = subtitlesEnabled,
                     isInPictureInPictureMode = isInPictureInPictureMode,
                     onBmlInputStateChanged = { available, contentVisible, groups ->
                         bmlActive = available
@@ -383,6 +387,8 @@ private fun PlayerLayout(
     onBack: () -> Unit,
     onReload: () -> Unit,
     modifier: Modifier = Modifier,
+    subtitlesEnabled: Boolean = true,
+    onSubtitlesEnabledChanged: (Boolean) -> Unit = {},
     tabletopSplit: TabletopSplit? = null,
     tvInputMode: TvInputMode = TvInputMode.Player,
     onTvInputModeChanged: (TvInputMode) -> Unit = {},
@@ -496,6 +502,10 @@ private fun PlayerLayout(
                                     }
                                 }
                                 Spacer(Modifier.weight(1f))
+                                SubtitlesButton(
+                                    enabled = subtitlesEnabled,
+                                    onEnabledChanged = onSubtitlesEnabledChanged,
+                                )
                                 AudioTrackMenu(
                                     tracks = audioTracks,
                                     selectedTrackId = selectedAudioTrackId,
@@ -1004,6 +1014,10 @@ private fun PlayerLayout(
                                 }
                             }
                             Spacer(Modifier.weight(1f))
+                            SubtitlesButton(
+                                enabled = subtitlesEnabled,
+                                onEnabledChanged = onSubtitlesEnabledChanged,
+                            )
                             AudioTrackMenu(
                                 tracks = audioTracks,
                                 selectedTrackId = selectedAudioTrackId,
@@ -1072,6 +1086,52 @@ private fun PlayerLayout(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SubtitlesButton(
+    enabled: Boolean,
+    onEnabledChanged: (Boolean) -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    FilledTonalIconButton(
+        onClick = { onEnabledChanged(!enabled) },
+        modifier =
+            Modifier
+                .onFocusChanged { focused = it.isFocused }
+                .then(
+                    if (focused) {
+                        Modifier.border(
+                            3.dp,
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.shapes.extraLarge,
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
+        colors =
+            IconButtonDefaults.filledTonalIconButtonColors(
+                containerColor =
+                    if (enabled) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.94f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f)
+                    },
+                contentColor =
+                    if (enabled) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+            ),
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.closed_caption_24),
+            contentDescription = if (enabled) "字幕をオフ" else "字幕をオン",
+            modifier = Modifier.size(24.dp),
+        )
     }
 }
 
