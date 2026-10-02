@@ -570,11 +570,17 @@ private fun PlayerLayout(
                 suppressTvBackUntilMillis = 0L
             } else if (tvInputMode == TvInputMode.DataBroadcast) {
                 onRemoteKey("Backspace")
-            } else if (!overlayVisible) {
-                overlayVisible = true
-                interactionGeneration++
             } else {
-                onBack()
+                when (tvPlayerBackAction(overlayVisible)) {
+                    TvPlayerBackAction.ShowOverlay -> {
+                        overlayVisible = true
+                        interactionGeneration++
+                    }
+
+                    TvPlayerBackAction.NavigateBack -> {
+                        onBack()
+                    }
+                }
             }
         }
         LaunchedEffect(overlayVisible, interactionGeneration, overlayTimeout, remoteVisible, audioMenuVisible, isTv) {
@@ -619,6 +625,26 @@ private fun PlayerLayout(
                     if (isTv && event.type == KeyEventType.KeyUp && longPressHandledKeyCode == keyCode) {
                         longPressHandledKeyCode = null
                         overlayWakeKeyCode = null
+                        return@onPreviewKeyEvent true
+                    }
+                    if (
+                        isTv && tvInputMode == TvInputMode.Player &&
+                        keyCode == AndroidKeyEvent.KEYCODE_BACK
+                    ) {
+                        if (event.type == KeyEventType.KeyUp) {
+                            suppressTvBackUntilMillis =
+                                SystemClock.uptimeMillis() + TV_BACK_SUPPRESSION_MILLIS
+                            when (tvPlayerBackAction(overlayVisible)) {
+                                TvPlayerBackAction.ShowOverlay -> {
+                                    overlayVisible = true
+                                    interactionGeneration++
+                                }
+
+                                TvPlayerBackAction.NavigateBack -> {
+                                    onBack()
+                                }
+                            }
+                        }
                         return@onPreviewKeyEvent true
                     }
                     if (isTv && tvInputMode == TvInputMode.DataBroadcast) {
@@ -1194,6 +1220,14 @@ private fun DataBroadcastInputHint(
         }
     }
 }
+
+internal enum class TvPlayerBackAction {
+    ShowOverlay,
+    NavigateBack,
+}
+
+internal fun tvPlayerBackAction(overlayVisible: Boolean): TvPlayerBackAction =
+    if (overlayVisible) TvPlayerBackAction.NavigateBack else TvPlayerBackAction.ShowOverlay
 
 private fun Int.toBmlKey(): String? =
     when (this) {
