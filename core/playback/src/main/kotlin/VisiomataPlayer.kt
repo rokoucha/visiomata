@@ -43,7 +43,6 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
-import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
@@ -57,7 +56,6 @@ import net.rokoucha.visiomata.playback.bml.BmlWebView
 import net.rokoucha.visiomata.playback.bml.createBmlWebView
 import net.rokoucha.visiomata.playback.mpeg2toh264.Mpeg2DecoderCapabilities
 import java.io.File
-import kotlin.math.roundToInt
 
 data class BmlRemoteKeyEvent(
     val key: String,
@@ -119,33 +117,6 @@ internal fun effectiveVideoRect(
     } else {
         videoRect
     }
-
-private fun updateSubtitleViewport(
-    playerView: PlayerView,
-    videoSize: VideoSize,
-) {
-    val subtitleView = playerView.subtitleView ?: return
-    val viewWidth = playerView.width
-    val viewHeight = playerView.height
-    if (viewWidth <= 0 || viewHeight <= 0 || videoSize.width <= 0 || videoSize.height <= 0) {
-        subtitleView.setPadding(0, 0, 0, 0)
-        return
-    }
-
-    val videoAspectRatio =
-        videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
-    val viewAspectRatio = viewWidth.toFloat() / viewHeight
-    val horizontalInset: Int
-    val verticalInset: Int
-    if (viewAspectRatio > videoAspectRatio) {
-        horizontalInset = ((viewWidth - viewHeight * videoAspectRatio) / 2f).roundToInt()
-        verticalInset = 0
-    } else {
-        horizontalInset = 0
-        verticalInset = ((viewHeight - viewWidth / videoAspectRatio) / 2f).roundToInt()
-    }
-    subtitleView.setPadding(horizontalInset, verticalInset, horizontalInset, verticalInset)
-}
 
 private fun prepareAribCaptionFont(
     context: Context,
@@ -547,21 +518,14 @@ fun VisiomataPlayer(
                             this.player = player
                             useController = false
                             keepScreenOn = player.isPlaying
-                            val subtitleViewportListener =
+                            val playbackViewListener =
                                 object : Player.Listener {
                                     override fun onIsPlayingChanged(isPlaying: Boolean) {
                                         keepScreenOn = isPlaying
                                     }
-
-                                    override fun onVideoSizeChanged(videoSize: VideoSize) {
-                                        updateSubtitleViewport(this@apply, videoSize)
-                                    }
                                 }
-                            tag = subtitleViewportListener
-                            player.addListener(subtitleViewportListener)
-                            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                                updateSubtitleViewport(this, player.videoSize)
-                            }
+                            tag = playbackViewListener
+                            player.addListener(playbackViewListener)
                         }
                     val videoHost =
                         FrameLayout(viewContext).apply {
