@@ -106,6 +106,6 @@ google-services = { id = "com.google.gms.google-services", version = "4.5.0" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
-openapi-generator = { id = "org.openapi.generator", version = "7.25.0" }
+openapi-generator = { id = "org.openapi.generator", version = "7.26.0" }
 opentelemetry-build = { id = "com.atkinsondev.opentelemetry-build", version.ref = "opentelemetryBuild" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
