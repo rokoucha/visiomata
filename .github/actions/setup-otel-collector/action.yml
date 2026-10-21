@@ -10,7 +10,7 @@ inputs:
   collector-version:
     description: Version of otelcol-contrib to install
     # renovate: datasource=github-releases depName=open-telemetry/opentelemetry-collector-releases
-    default: 'v0.163.1'
+    default: 'v0.163.2'
 runs:
   using: composite
   steps:
