@@ -1,6 +1,6 @@
 [versions]
 aboutLibraries = "15.3.0"
-androidGradlePlugin = "9.5.0"
+androidGradlePlugin = "9.5.1"
 androidxActivity = "1.13.0"
 androidxComposeBom = "2026.09.00"
 androidxComposeMaterial3 = "1.5.0-rc01"
