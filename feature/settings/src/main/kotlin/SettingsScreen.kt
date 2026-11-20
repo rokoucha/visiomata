@@ -404,7 +404,7 @@ private fun AvcDecoderMode.title(): String =
 
 private fun AvcDecoderMode.description(): String =
     when (this) {
-        AvcDecoderMode.Auto -> "端末が選んだH.264デコーダーを使用します"
+        AvcDecoderMode.Auto -> "端末の対応状況に応じて、最適なデコーダーを使用します"
         AvcDecoderMode.ForceHardwareDecoder -> "ハードウェアH.264デコーダーを優先します"
         AvcDecoderMode.ForceSoftwareDecoder -> "ソフトウェアH.264デコーダーを優先します。CPU負荷が高まります"
     }
